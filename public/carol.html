@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carol - Francine Screener</title>
+    <link rel="stylesheet" href="/assets/css/styles.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <header class="dashboard-header">
+            <div class="header-left">
+                <h1>Francine Screener</h1>
+                <span class="user-role">Research</span>
+            </div>
+            <div class="header-right">
+                <span class="user-name">Carol</span>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </header>
+
+        <div class="dashboard-content">
+            <nav class="sidebar">
+                <ul>
+                    <li><a href="#" class="active">Dashboard</a></li>
+                    <li><a href="#">Screening</a></li>
+                    <li><a href="#">Research</a></li>
+                    <li><a href="#">Analytics</a></li>
+                    <li><a href="#">Settings</a></li>
+                </ul>
+            </nav>
+
+            <main class="main-content">
+                <div class="welcome-section">
+                    <h2>Welcome, Carol</h2>
+                    <p>Research dashboard for advanced stock screening and data analysis</p>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Research Papers</h3>
+                        <p>156</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Qualified Stocks</h3>
+                        <p>73</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Research Hours</h3>
+                        <p>89</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Data Points</h3>
+                        <p>2.4M</p>
+                    </div>
+                </div>
+
+                <div class="screening-section">
+                    <h3>Advanced Research Screening</h3>
+                    <div class="screening-form">
+                        <div class="form-group">
+                            <label>Price Range ($)</label>
+                            <input type="text" placeholder="From - To" value="$5 - $300">
+                        </div>
+                        <div class="form-group">
+                            <label>IV Range (%)</label>
+                            <input type="text" placeholder="Min - Max" value="20 - 60%">
+                        </div>
+                        <div class="form-group">
+                            <label>Min Volume</label>
+                            <input type="text" placeholder="Shares" value="500,000">
+                        </div>
+                        <button class="run-button">RUN FRANCINE SCREEN v2</button>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    
+    <script>
+        function logout() {
+            localStorage.removeItem('currentUser');
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+</html>

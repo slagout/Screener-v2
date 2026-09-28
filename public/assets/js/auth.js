@@ -16,6 +16,11 @@ const users = {
         name: "Francine",
         role: "trader",
         password: "trader123"
+    },
+    carol: {
+        name: "Carol",
+        role: "research",
+        password: "research123"
     }
 };
 
