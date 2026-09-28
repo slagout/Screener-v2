@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "src/app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    { "src": "/login", "dest": "/public/login.html" },
+    { "src": "/jeffrey", "dest": "/public/jeffrey.html" },
+    { "src": "/tom", "dest": "/public/tom.html" },
+    { "src": "/francine", "dest": "/public/francine.html" },
+    { "src": "/(.*)", "dest": "/public/index.html" }
+  ]
+}

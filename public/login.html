@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Francine Screener - Login</title>
+    <link rel="stylesheet" href="/assets/css/styles.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-card">
+            <h1>Francine Screener</h1>
+            <p>Secure Access Portal</p>
+            
+            <div class="user-selector">
+                <h2>Select Your Role</h2>
+                
+                <div class="user-option" onclick="selectUser('jeffrey')">
+                    <div class="user-icon">👨‍💼</div>
+                    <div class="user-info">
+                        <h3>Jeffrey</h3>
+                        <p>Administrator</p>
+                    </div>
+                </div>
+                
+                <div class="user-option" onclick="selectUser('tom')">
+                    <div class="user-icon">📊</div>
+                    <div class="user-info">
+                        <h3>Tom</h3>
+                        <p>Analyst</p>
+                    </div>
+                </div>
+                
+                <div class="user-option" onclick="selectUser('francine')">
+                    <div class="user-icon">📈</div>
+                    <div class="user-info">
+                        <h3>Francine</h3>
+                        <p>Trader</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="login-footer">
+                <p>© 2024 Founder CEO Max - Institutional Screening Solutions</p>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/assets/js/auth.js"></script>
+</body>
+</html>
