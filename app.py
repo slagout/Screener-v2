@@ -19,16 +19,62 @@ PRIORITY_COUNTRIES = ["united states","canada","united kingdom","germany","franc
 # MAX_QUALIFIED = 20 — removed; show all qualified companies per Francine's spec
 
 @st.cache_data(ttl=3600)
-def get_sp500_tickers():
+def get_index_tickers(index_name):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
-        resp = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=15)
+        urls = {
+            "S&P 500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            "S&P 400": "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+            "S&P 600": "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies",
+        }
+        resp = requests.get(urls[index_name], headers=headers, timeout=15)
         resp.raise_for_status()
         df = pd.read_html(io.StringIO(resp.text))[0]
         return df["Symbol"].str.replace(".","-",regex=False).tolist()
     except Exception as e:
-        st.error(f"Failed to load S&P 500: {e}")
+        st.error(f"Failed to load {index_name}: {e}")
         return []
+
+@st.cache_data(ttl=3600)
+def get_rest_of_market_tickers():
+    """Load liquid US-listed symbols from Nasdaq's public screener endpoint."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.nasdaq.com",
+            "Referer": "https://www.nasdaq.com/",
+        }
+        resp = requests.get(
+            "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&market=stocks",
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        rows = (resp.json().get("data") or {}).get("rows") or []
+        return [row["symbol"].replace(".", "-") for row in rows if row.get("symbol")]
+    except Exception as e:
+        st.warning(f"Could not load the rest of the market: {e}")
+        return []
+
+def get_universe_tickers(universe):
+    if universe == "S&P 500":
+        return get_index_tickers("S&P 500")
+    if universe == "S&P 400":
+        return get_index_tickers("S&P 400")
+    if universe == "S&P 600":
+        return get_index_tickers("S&P 600")
+    if universe == "Rest of Market":
+        return get_rest_of_market_tickers()
+
+    seen = set()
+    tickers = []
+    for tier in ("S&P 500", "S&P 400", "S&P 600", "Rest of Market"):
+        for ticker in get_universe_tickers(tier):
+            if ticker not in seen:
+                seen.add(ticker)
+                tickers.append(ticker)
+    return tickers
 
 def passes_industry(info):
     s = (info.get("sector") or "").lower(); i = (info.get("industry") or "").lower()
@@ -187,7 +233,20 @@ st.markdown("""
 st.markdown('<div class="main-title">★ FRANCINE SCREENER v2</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Master Options & Fundamentals Screener — Institutional Quantitative Analysis</div>', unsafe_allow_html=True)
 
-st.markdown("### Phase 1: Target Price Range")
+st.markdown("### Universe")
+universe = st.radio(
+    "Choose:",
+    ["S&P 500", "S&P 400", "S&P 600", "Rest of Market", "All Tiers Progressive"],
+    format_func=lambda value: {
+        "S&P 500": "S&P 500 — Large Cap (~503 stocks)",
+        "S&P 400": "S&P 400 — Mid Cap (~400 stocks)",
+        "S&P 600": "S&P 600 — Small Cap (~603 stocks)",
+        "Rest of Market": "Rest of Market — Other US-listed stocks",
+        "All Tiers Progressive": "All Tiers Progressive (1>2>3>4)",
+    }[value],
+)
+
+st.markdown("### Parameters")
 c1,c2=st.columns(2)
 with c1: lo=st.number_input("From ($)",1.0,5000.0,10.0,1.0)
 with c2: hi=st.number_input("To ($)",1.0,5000.0,50.0,1.0)
@@ -208,7 +267,7 @@ with tab1:
         elif lo>=hi: st.error("To: must be greater than From:.")
         elif iv_lo>=iv_hi: st.error("IV Min must be less than IV Max.")
         else:
-            with st.spinner("Loading S&P 500..."): tickers=get_sp500_tickers()
+            with st.spinner(f"Loading {universe}..."): tickers=get_universe_tickers(universe)
             if not tickers: st.stop()
             st.info(f"Scanning {len(tickers):,} stocks — ${lo:.0f}-${hi:.0f}, IV {iv_lo:.0f}-{iv_hi:.0f}%, vol ≥{min_vol:,}")
             pb=st.progress(0,text="Starting..."); stx=st.empty()
@@ -251,7 +310,10 @@ with tab1:
 
 with tab2:
     st.markdown("""
-    **What it does:** Screens the S&P 500 using Francine's v2 methodology.
+    **What it does:** Screens selected US-market tiers using Francine's v2 methodology.
+
+    **Universes:** S&P 500 large caps, S&P 400 mid caps, S&P 600 small caps,
+    the remaining Nasdaq-listed market, or all four tiers progressively.
 
     **Filters (all must pass):**
     1. Industry exclusion — no banks, insurance, pharma, etc.
