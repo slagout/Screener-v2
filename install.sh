@@ -65,9 +65,9 @@ fi
 source venv/bin/activate
 
 # Install dependencies if needed
-if ! pip list | grep -q streamlit; then
+if ! python -c "import streamlit, lxml" >/dev/null 2>&1; then
     echo "Installing dependencies..."
-    pip install -r requirements.txt
+    python -m pip install -r requirements.txt
 fi
 
 # Run the application

@@ -99,6 +99,7 @@ streamlit run app.py
 streamlit==1.40.2
 yfinance==0.2.54
 pandas==2.2.3
+lxml==5.3.0
 numpy==2.0.2
 requests==2.32.3
 altair==5.5.0
@@ -128,7 +129,7 @@ APP = ['app.py']
 DATA_FILES = []
 OPTIONS = {
     'argv_emulation': True,
-    'packages': ['streamlit', 'yfinance', 'pandas', 'numpy', 'requests', 'altair'],
+    'packages': ['streamlit', 'yfinance', 'pandas', 'lxml', 'numpy', 'requests', 'altair'],
     'plist': {
         'CFBundleName': 'FrancineScreener',
         'CFBundleDisplayName': 'Francine Screener v2',
