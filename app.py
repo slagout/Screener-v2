@@ -97,9 +97,21 @@ def passes_price(info, lo, hi):
     if p < lo or p > hi: return False, f"${p:.2f} outside range", p
     return True, "", p
 
-def get_iv(ticker):
+def is_rate_limited(e):
+    m = str(e).lower()
+    return "too many requests" in m or "rate limit" in m or "429" in m
+
+def get_info(s, tries=4):
+    for n in range(tries):
+        try:
+            return s.info
+        except Exception as e:
+            if not is_rate_limited(e) or n == tries - 1: raise
+            time.sleep(2 * (n + 1))
+
+def get_iv(s):
     try:
-        s = yf.Ticker(ticker); eds = s.options
+        eds = s.options
         if not eds: return None,None
         px = s.info.get("currentPrice") or s.info.get("regularMarketPrice")
         if not px: return None,None
@@ -117,9 +129,9 @@ def get_iv(ticker):
         return None,None
     except: return None,None
 
-def check_options(ticker):
+def check_options(s):
     try:
-        s=yf.Ticker(ticker); eds=s.options
+        eds=s.options
         if not eds or len(eds)<2: return False,0,0
         o=s.option_chain(eds[0]); c=o.calls; p=o.puts
         if c.empty or p.empty: return False,len(eds),0
@@ -133,9 +145,9 @@ def check_options(ticker):
         return wk>=2,len(eds),tv
     except: return False,0,0
 
-def get_margins(ticker):
+def get_margins(s):
     try:
-        s=yf.Ticker(ticker); ix=s.financials
+        ix=s.financials
         if ix is None or ix.empty: return None,None
         yr=ix.iloc[:,0]; oi=None; rev=None
         for k in ["Operating Income","EBIT","Operating Profit"]:
@@ -146,9 +158,9 @@ def get_margins(ticker):
         return None,None
     except: return None,None
 
-def get_cagr(ticker):
+def get_cagr(s):
     try:
-        s=yf.Ticker(ticker); ix=s.financials
+        ix=s.financials
         if ix is None or ix.empty or ix.shape[1]<3: return None,None
         revs=[]
         for i in range(min(4,ix.shape[1])):
@@ -198,7 +210,7 @@ def screen(ticker, lo, hi, iv_tgt, iv_lo, iv_hi, min_vol):
     r={"ticker":ticker,"ok":False,"reason":"","name":"","sector":"","industry":"","price":None,"iv":None,"vol":0,"has_wk":False,"num_exp":0,"opt_vol":0,"margin":None,"cagr":None,"driver":"","log":[]}
     def log(m): r["log"].append(m)
     try:
-        s=yf.Ticker(ticker); info=s.info
+        s=yf.Ticker(ticker); info=get_info(s)
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             r["reason"]="No price"; log("FAIL - no price"); return r
         r["name"]=info.get("longName") or info.get("shortName") or ticker
@@ -215,12 +227,12 @@ def screen(ticker, lo, hi, iv_tgt, iv_lo, iv_hi, min_vol):
         if not ok: r["reason"]=re; log(f"FAIL - {re}"); return r
         r["price"]=px; log(f"PASS price ${px:.2f}")
 
-        hw,ne,ov=check_options(ticker)
+        hw,ne,ov=check_options(s)
         r["has_wk"]=hw; r["num_exp"]=ne; r["opt_vol"]=ov
         if not hw: r["reason"]="No weekly options"; log(f"FAIL - no weekly chain ({ne} exp)"); return r
         log(f"PASS - {ne} expirations, vol {ov:,}")
 
-        iv,ivs=get_iv(ticker)
+        iv,ivs=get_iv(s)
         if iv is None: r["reason"]="No IV data"; log("FAIL - no IV"); return r
         r["iv"]=round(iv,1)
         if iv<iv_lo or iv>iv_hi: r["reason"]=f"IV {iv:.1f}% outside {iv_lo:.0f}-{iv_hi:.0f}%"; log(f"FAIL - IV {iv:.1f}%"); return r
@@ -231,13 +243,13 @@ def screen(ticker, lo, hi, iv_tgt, iv_lo, iv_hi, min_vol):
         if adv<min_vol: r["reason"]=f"Vol {adv:,}<{min_vol:,}"; log(f"FAIL - vol {adv:,}"); return r
         log(f"PASS - vol {adv:,}")
 
-        om,oy=get_margins(ticker)
+        om,oy=get_margins(s)
         if om is None: r["reason"]="No margin data"; log("FAIL - no margin"); return r
         r["margin"]=round(om,2)
         if om<=0: r["reason"]=f"Margin {om:.1f}% negative"; log(f"FAIL - margin {om:.1f}%"); return r
         log(f"PASS - margin {om:.1f}%")
 
-        cg,_=get_cagr(ticker); r["cagr"]=cg
+        cg,_=get_cagr(s); r["cagr"]=cg
         r["driver"]=get_summary(info,ticker)
         r["ok"]=True; log("✅ QUALIFIED ★")
         return r
@@ -303,17 +315,21 @@ with tab1:
         else:
             with st.spinner(f"Loading {universe}..."): tickers=get_universe_tickers(universe)
             if not tickers: st.stop()
-            st.info(f"Scanning {len(tickers):,} stocks — ${lo:.0f}-${hi:.0f}, IV {iv_lo:.0f}-{iv_hi:.0f}%, vol ≥{min_vol:,}")
+            st.info(f"Scanning {len(tickers):,} stocks — \\${lo:.0f}-\\${hi:.0f}, IV {iv_lo:.0f}-{iv_hi:.0f}%, vol ≥{min_vol:,}")
             anim=st.empty(); anim.markdown(SCAN_SVG,unsafe_allow_html=True)
             pb=st.empty(); stx=st.empty()
-            ok=[]; out=[]
+            ok=[]; out=[]; throttled=0
             for i,t in enumerate(tickers):
                 pb.markdown(progress_svg((i+1)/len(tickers)),unsafe_allow_html=True)
                 stx.text(f"[{i+1}/{len(tickers)}] {t} — {len(ok)} qualified, {len(out)} excluded")
                 r=screen(t,lo,hi,iv_tgt,iv_lo,iv_hi,min_vol)
                 if r["ok"]: ok.append(r)
                 else: out.append(r)
-                if i%4==0: time.sleep(0.05)
+                throttled = throttled+1 if is_rate_limited(r["reason"]) else 0
+                if throttled>=15:
+                    st.error("Yahoo Finance is rate-limiting this server. Scan stopped early — wait a few minutes and retry.")
+                    break
+                time.sleep(0.15)
             anim.empty(); pb.markdown(progress_svg(1.0),unsafe_allow_html=True); stx.text(f"Done — {len(ok)} qualified, {len(out)} excluded of {len(tickers):,}")
             st.markdown("---")
 
