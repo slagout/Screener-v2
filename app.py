@@ -170,6 +170,30 @@ def get_summary(info,ticker):
         return ss[:250]+("..." if len(ss)>250 else "")
     return f"{ticker}"
 
+SCAN_SVG = """<div class="scan-wrap"><svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="sweepg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#1a6b3c" stop-opacity="0"/><stop offset="1" stop-color="#2ecc71" stop-opacity="0.8"/></linearGradient></defs>
+<circle cx="100" cy="100" r="90" fill="none" stroke="#1a6b3c" stroke-opacity="0.5"/>
+<circle cx="100" cy="100" r="60" fill="none" stroke="#1a6b3c" stroke-opacity="0.4"/>
+<circle cx="100" cy="100" r="30" fill="none" stroke="#1a6b3c" stroke-opacity="0.3"/>
+<line x1="10" y1="100" x2="190" y2="100" stroke="#1a6b3c" stroke-opacity="0.3"/>
+<line x1="100" y1="10" x2="100" y2="190" stroke="#1a6b3c" stroke-opacity="0.3"/>
+<circle class="scan-ping" cx="100" cy="100" r="6" fill="none" stroke="#2ecc71"/>
+<circle class="scan-ping p2" cx="100" cy="100" r="6" fill="none" stroke="#2ecc71"/>
+<g class="scan-sweep"><path d="M100 100 L190 100 A90 90 0 0 0 163.6 36.4 Z" fill="url(#sweepg)" transform="rotate(45 100 100)"/></g>
+<circle class="scan-blip" cx="140" cy="70" r="3" fill="#2ecc71"/>
+<circle class="scan-blip" style="animation-delay:0.7s" cx="65" cy="125" r="3" fill="#2ecc71"/>
+<circle class="scan-blip" style="animation-delay:1.4s" cx="115" cy="150" r="3" fill="#2ecc71"/>
+<circle cx="100" cy="100" r="4" fill="#2ecc71"/>
+</svg></div>"""
+
+def progress_svg(frac):
+    w = max(0.0, min(frac, 1.0)) * 300
+    return (f'<svg width="100%" height="14" viewBox="0 0 300 14" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
+            f'<defs><clipPath id="pc"><rect x="0" y="0" width="{w:.1f}" height="14" rx="7"/></clipPath></defs>'
+            f'<rect width="300" height="14" rx="7" fill="#1a6b3c" fill-opacity="0.2"/>'
+            f'<g clip-path="url(#pc)"><rect width="300" height="14" fill="#1a6b3c"/>'
+            f'<rect class="scan-shimmer" width="40" height="14" fill="#fff" fill-opacity="0.25"/></g></svg>')
+
 def screen(ticker, lo, hi, iv_tgt, iv_lo, iv_hi, min_vol):
     r={"ticker":ticker,"ok":False,"reason":"","name":"","sector":"","industry":"","price":None,"iv":None,"vol":0,"has_wk":False,"num_exp":0,"opt_vol":0,"margin":None,"cagr":None,"driver":"","log":[]}
     def log(m): r["log"].append(m)
@@ -227,6 +251,16 @@ st.markdown("""
     .subtitle { color:#888; margin-bottom:1.5rem }
     .fc-badge { display:inline-block; background:#1a6b3c; color:#fff; padding:0.15rem 0.6rem; border-radius:12px; font-size:0.8rem; font-weight:600 }
     div[data-testid="stStatusWidget"] { display:none !important }
+    .scan-wrap { display:flex; justify-content:center; margin:0.5rem 0 }
+    .scan-sweep { transform-origin:100px 100px; animation:scan-spin 2.4s linear infinite }
+    .scan-ping { transform-origin:center; animation:scan-ping 2.4s ease-out infinite }
+    .scan-ping.p2 { animation-delay:0.8s }
+    .scan-blip { animation:scan-blip 2.4s ease-in-out infinite }
+    .scan-shimmer { animation:scan-shimmer 1.4s linear infinite }
+    @keyframes scan-spin { to { transform:rotate(360deg) } }
+    @keyframes scan-ping { 0% { opacity:0.7; r:6 } 100% { opacity:0; r:70 } }
+    @keyframes scan-blip { 0%,100% { opacity:0.15 } 50% { opacity:1 } }
+    @keyframes scan-shimmer { from { transform:translateX(-40px) } to { transform:translateX(300px) } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -270,20 +304,27 @@ with tab1:
             with st.spinner(f"Loading {universe}..."): tickers=get_universe_tickers(universe)
             if not tickers: st.stop()
             st.info(f"Scanning {len(tickers):,} stocks — ${lo:.0f}-${hi:.0f}, IV {iv_lo:.0f}-{iv_hi:.0f}%, vol ≥{min_vol:,}")
-            pb=st.progress(0,text="Starting..."); stx=st.empty()
+            anim=st.empty(); anim.markdown(SCAN_SVG,unsafe_allow_html=True)
+            pb=st.empty(); stx=st.empty()
             ok=[]; out=[]
             for i,t in enumerate(tickers):
-                pb.progress(min((i+1)/len(tickers),1.0))
+                pb.markdown(progress_svg((i+1)/len(tickers)),unsafe_allow_html=True)
                 stx.text(f"[{i+1}/{len(tickers)}] {t} — {len(ok)} qualified, {len(out)} excluded")
                 r=screen(t,lo,hi,iv_tgt,iv_lo,iv_hi,min_vol)
                 if r["ok"]: ok.append(r)
                 else: out.append(r)
                 if i%4==0: time.sleep(0.05)
-            pb.progress(1.0); stx.text(f"Done — {len(ok)} qualified, {len(out)} excluded of {len(tickers):,}")
+            anim.empty(); pb.markdown(progress_svg(1.0),unsafe_allow_html=True); stx.text(f"Done — {len(ok)} qualified, {len(out)} excluded of {len(tickers):,}")
             st.markdown("---")
 
             if not ok:
                 st.warning("No companies pass all filters. Try widening the range.")
+                rc={}
+                for s in out:
+                    cat=(s["reason"][:80] if s["reason"] else "Unknown").split("(")[0].strip()
+                    rc[cat]=rc.get(cat,0)+1
+                for rea,cnt in sorted(rc.items(),key=lambda x:-x[1])[:15]:
+                    st.markdown(f"- **{rea}** → {cnt} companies")
             else:
                 st.markdown(f"### ✅ QUALIFIED — Francine Core ★")
                 td=[]
