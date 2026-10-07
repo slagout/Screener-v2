@@ -345,15 +345,23 @@ with tab1:
                 st.markdown(f"### ✅ QUALIFIED — Francine Core ★")
                 td=[]
                 for q in ok:
-                    td.append({"Ticker":q["ticker"],"Company":q["name"],"Price":f"${q['price']:.2f}","30D IV":f"{q['iv']:.1f}%" if q['iv'] else "N/A","Avg Vol":f"{q['vol']:,}","3Y CAGR":f"{q['cagr']:.1f}%" if q['cagr'] is not None else "N/A","Catalyst":(q['driver'][:120]+"...") if len(q.get('driver',''))>120 else (q['driver'] or "N/A")})
+                    parts=[]
+                    if q.get("cagr") is not None: parts.append(f"{q['cagr']:.1f}% 3Y CAGR")
+                    if q.get("margin") is not None: parts.append(f"{q['margin']:.1f}% op margin")
+                    growth=" / ".join(parts) if parts else "N/A"
+                    drv=q.get("driver") or ""
+                    overview=f"{q['industry']} — {drv}" if drv and drv!=q["ticker"] else q["industry"]
+                    overview=(overview[:150]+"...") if len(overview)>150 else overview
+                    td.append({"Ticker":q["ticker"],"Company Name":q["name"],"Current Share Price":f"${q['price']:.2f}","30-Day IV":f"{q['iv']:.1f}%" if q['iv'] else "N/A","Avg Daily Share Volume":f"{q['vol']:,}","Rev/Margin Growth":growth,"Primary Business Overview / Industry":overview})
                 st.dataframe(pd.DataFrame(td),hide_index=True,use_container_width=True)
 
                 st.markdown("---")
                 st.markdown("### 🏆 Top Picks for Income Strategies")
-                top=sorted(ok,key=lambda q:((q.get('cagr') or 0),(q.get('margin') or 0)),reverse=True)[:3]
+                st.caption("Best suited for Cash-Secured Puts / Covered Calls (The Wheel) — ranked on options liquidity and underlying structural growth.")
+                top=sorted(ok,key=lambda q:((q.get('opt_vol') or 0),(q.get('cagr') or 0),(q.get('margin') or 0)),reverse=True)[:3]
                 for i,q in enumerate(top,1):
                     c=f"{q['cagr']:.1f}% CAGR" if q.get('cagr') else "N/A"
-                    st.markdown(f"{i}. **{q['ticker']}** — {q['name']} — ${q['price']:.2f}, IV {q['iv']:.1f}%, {c}, margin {q['margin']:.1f}%")
+                    st.markdown(f"{i}. **{q['ticker']}** — {q['name']} — ${q['price']:.2f}, IV {q['iv']:.1f}%, {c}, margin {q['margin']:.1f}%, options vol {q.get('opt_vol',0):,}, {q.get('num_exp',0)} expirations (weeklies: {'yes' if q.get('has_wk') else 'no'})")
 
                 st.markdown("---")
                 st.markdown("### 🔍 Screened-Out Summary")
@@ -364,6 +372,12 @@ with tab1:
                 for rea,cnt in sorted(rc.items(),key=lambda x:-x[1]):
                     st.markdown(f"- **{rea}** → {cnt} companies")
                 st.markdown(f"_{len(out):,} of {len(tickers):,} excluded._")
+
+                with st.expander("Per-ticker exclusion detail"):
+                    od=[]
+                    for s in out:
+                        od.append({"Ticker":s["ticker"],"Company":s.get("name") or "","Screened Out Because":s["reason"] or "Unknown"})
+                    st.dataframe(pd.DataFrame(od),hide_index=True,use_container_width=True)
 
 with tab2:
     st.markdown("""
