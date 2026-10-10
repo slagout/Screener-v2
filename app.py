@@ -373,7 +373,7 @@ def _pixel_chart(pct):
     edge = _PIXEL_COLS * pct / 100
     rects = "".join(
         f"<rect x='{x*s}' y='{y*s}' width='{s-1}' height='{s-1}' "
-        + (f"fill='{col}'/>" if x < edge else "fill='#e9e5df'/>")
+        + (f"fill='{col}'/>" if x < edge else "style='fill:var(--px-off)'/>")
         for x, y, col in _PIXELS
     )
     return (f"<svg class='pixel-chart' viewBox='0 0 {_PIXEL_COLS*s} {_PIXEL_ROWS*s}' "
@@ -539,6 +539,49 @@ section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
 </style>
 """, unsafe_allow_html=True)
 
+
+def theme_css(dark):
+    t = dict(
+        bg="#000000", panel="#0a0a0a", soft="#111111", border="#2e2e2e", text="#ededed",
+        muted="#a1a1a1", btn="#ffffff", btn_text="#000000", btn_hover="#d4d4d4", off="#262626",
+        ok="#0f2a1c", ok_b="#1a4d33", no="#2a1212", no_b="#5c2222",
+    ) if dark else dict(
+        bg="#ffffff", panel="#ffffff", soft="#fafafa", border="#eaeaea", text="#000000",
+        muted="#666666", btn="#000000", btn_text="#ffffff", btn_hover="#333333", off="#ededed",
+        ok="#e9f6ee", ok_b="#bfe3cf", no="#fbeeee", no_b="#f1c9c9",
+    )
+    return f"""<style>
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
+:root{{--px-off:{t['off']}}}
+html,body,[class*="css"],.stApp{{font-family:'Geist','Inter',sans-serif}}
+.stApp,header[data-testid="stHeader"]{{background:{t['bg']}!important;color:{t['text']}}}
+.stApp p,.stApp label,.stApp span,.stApp h1,.stApp h2,.stApp h3,.stApp li,.stApp div[data-testid="stMarkdownContainer"]{{color:{t['text']}}}
+.stApp svg{{color:{t['text']}}}
+section[data-testid="stSidebar"]{{background:{t['soft']}!important;border-right:1px solid {t['border']}}}
+.main-title,.card-name,.card-price,.metric b,.side-brand,.loader-title,.loader-card b,.chip b,.loader-tip b,.loader-pct,.pixel-pct{{color:{t['text']}!important}}
+.subtitle,.section-label,.card-sub,.metric span,.driver,.loader-detail,.loader-tip,.loader-card span{{color:{t['muted']}!important}}
+.card,.chip,.loader-card{{background:{t['panel']}!important;border-color:{t['border']}!important}}
+.metric{{background:{t['soft']}!important}}
+.chip.ok{{background:{t['ok']}!important;border-color:{t['ok_b']}!important}}
+.chip.no{{background:{t['no']}!important;border-color:{t['no_b']}!important}}
+.chip{{color:{t['muted']}!important}}
+.side-brand i{{background:{t['text']}!important}}
+.loader-badge{{background:{t['soft']}!important}}
+.loader-badge svg{{stroke:{t['text']}!important}}
+div[data-baseweb="input"],div[data-baseweb="input"] input,div[data-baseweb="base-input"]{{background:{t['soft']}!important;color:{t['text']}!important}}
+div[data-baseweb="input"] button{{background:transparent!important;color:{t['text']}!important}}
+.stButton>button,div[data-testid="stPopover"] button,.stDownloadButton>button{{background:{t['panel']}!important;color:{t['text']}!important;border:1px solid {t['border']}!important;border-radius:6px}}
+.stButton>button:hover,div[data-testid="stPopover"] button:hover,.stDownloadButton>button:hover{{border-color:{t['text']}!important;color:{t['text']}!important}}
+.stButton>button[kind="primary"]{{background:{t['btn']}!important;border-color:{t['btn']}!important;color:{t['btn_text']}!important}}
+.stButton>button[kind="primary"] p{{color:{t['btn_text']}!important}}
+.stButton>button[kind="primary"]:hover{{background:{t['btn_hover']}!important;border-color:{t['btn_hover']}!important;color:{t['btn_text']}!important}}
+div[data-testid="stExpander"] details{{border-color:{t['border']}!important;background:{t['panel']}!important}}
+hr{{border-color:{t['border']}!important}}
+</style>"""
+
+
+st.markdown(theme_css(st.session_state.get("dark_mode", False)), unsafe_allow_html=True)
+
 st.markdown('<div class="main-title">Francine Screener</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Options-liquid stocks across four market tiers, no industry exclusions.</div>', unsafe_allow_html=True)
 
@@ -581,6 +624,7 @@ if preset:
 
 with st.sidebar:
     st.markdown('<div class="side-brand"><i></i>Francine</div>', unsafe_allow_html=True)
+    st.toggle("Dark mode", key="dark_mode")
     st.markdown('<div class="section-label">Tier selection</div>', unsafe_allow_html=True)
     pc = st.columns(2)
     if pc[0].button("Tier 1", use_container_width=True):
