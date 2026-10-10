@@ -7,6 +7,15 @@ insurance, and financial services.
 **Key difference from V2:** V3 also **requires a weekly options chain** —
 companies with only monthly options are rejected.
 
+> **Important — FMP free keys are very limited.** Prices, fundamentals and company data now
+> come from [Financial Modeling Prep](https://site.financialmodelingprep.com/register). A free key
+> allows **250 requests/day** *and* can only query roughly **87 symbols** (AAPL, TSLA, AMZN and
+> about 84 others); the rest are rejected as "not covered by your plan". A full 500-ticker scan
+> on a free key will therefore take **multiple days of cached accumulation** and will never cover
+> the whole index. Upgrade to a paid plan (Starter and up) for full coverage. Every ticker costs
+> up to 5 requests, so the app tests the cheapest filters first and caches every response in
+> `./cache/` (it survives restarts).
+
 ---
 
 ## 🚀 HOW TO RUN — Step by Step (takes ~5 minutes)
@@ -47,6 +56,21 @@ pip install -r requirements.txt
 
 (You'll see `(.venv)` appear at the start of the line — that's normal and good.)
 
+### Step 3b: Add your FMP API key (one time only)
+
+1. Create a free account at https://site.financialmodelingprep.com/register and copy your API key.
+2. Copy `.env.example` to `.env` and replace `your_key_here` with your key:
+   ```
+   FMP_API_KEY=your_key_here
+   ```
+3. `.env` is git-ignored — never commit it. (On Streamlit Community Cloud, add `FMP_API_KEY` under
+   the app's **Secrets** instead; note its disk cache is wiped on restart.)
+
+Without a key the app shows a message in the sidebar and the Run button stays disabled.
+Optional tuning in `.env`: `FMP_DAILY_LIMIT` (default 250) and cache lifetimes in seconds
+`FMP_CACHE_TTL_QUOTE` (3600), `FMP_CACHE_TTL_PROFILE`, `FMP_CACHE_TTL_INCOME`,
+`FMP_CACHE_TTL_BALANCE`, `FMP_CACHE_TTL_CASHFLOW` (7 days each).
+
 ### Step 4: Run the app
 
 Type this and press Enter:
@@ -61,10 +85,10 @@ If it doesn't open automatically, open your browser and type that address yourse
 
 ### Step 5: Use it
 
-1. Enter a **price range** (From: $25 → To: $75, or any range you want)
-2. Click **🚀 RUN SCREEN**
-3. Wait ~2-3 minutes while it scans the S&P 500
-4. View the results — up to 5 qualified companies with full details
+1. Enter a **price range** (From: $25 → To: $75, or any range you want) and a minimum IV
+2. Click **Run screen**
+3. Wait while it works through the S&P 500 (a free key stops at its 250-request daily budget)
+4. View the results — every company that passes all filters, with full details
 
 ### When you're done
 
@@ -84,7 +108,9 @@ Press `Ctrl + C` in the Command Prompt window to stop the app. Close the window.
 | 52-Week High | ≥ 25% below high |
 | Implied Volatility | ≥ 30% |
 | Altman-Z Score | > 3.0 |
-| Financial Data | Most recent fiscal year (SEC filings via Yahoo Finance) |
+| Financial Data | Most recent fiscal year, annual statements (Financial Modeling Prep) |
+| Data sources | Prices, profile, statements: FMP. Weekly options and IV: Yahoo Finance via yfinance (FMP has no options data). S&P 500 list: open dataset, cached daily in `sp500.csv`. |
+| Failures | A fetch failure is UNKNOWN and the ticker is skipped, never passed |
 
 A company appears in the results **only if it passes every single check**.
 
@@ -123,12 +149,17 @@ different ports: `streamlit run app.py --server.port 8501` for V2 and
 | Browser doesn't open | Type `http://localhost:8501` manually in any browser |
 | App says "No companies found" | No S&P 500 company currently passes ALL V3 filters in your range. Try a wider range |
 | Port already in use | Run `streamlit run app.py --server.port 8502` instead |
+| Sidebar says "FMP API key missing" | Create `.env` from `.env.example` (Step 3b) and restart |
+| Many tickers "Not covered by FMP plan" | Free keys only cover ~87 symbols; upgrade your FMP plan |
+| "Stopped: FMP daily budget" | The 250-request/day limit was hit; run again tomorrow — cached results are reused |
 
 ## 📁 What's in the folder
 
 ```
 company-screening-tool-v3/
 ├── app.py              ← The V3 app itself
+├── data_sources/       ← fmp.py (FMP + cache), options.py (weekly/IV), constituents.py (S&P 500 list)
+├── .env.example        ← Copy to .env and add your FMP key
 ├── requirements.txt    ← What the app needs to install
 └── README.md           ← This file
 ```
