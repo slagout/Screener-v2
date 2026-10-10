@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-st.set_page_config(page_title="Francine Screener V3", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Stock Screener", page_icon=os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "assets", "favicon.png"), layout="wide", initial_sidebar_state="expanded")
 
 # ── ALL INDUSTRY/SECTOR/NAME EXCLUSIONS REMOVED per Tom's directive ──
 # V3 scans ALL industries: pharma, banks, insurance, tobacco, cannabis,
@@ -391,7 +391,7 @@ WIKI_EXTRA_TIPS = [
 
 def render_wiki():
     st.markdown(
-        "**Francine Screener** finds options-liquid stocks across four market tiers, "
+        "**Stock Screener** finds options-liquid stocks across four market tiers, "
         "then filters them by price, implied volatility, volume and profitability."
     )
     t1, t2, t3, t4 = st.tabs(["Getting started", "Filters", "Results", "Did you know"])
@@ -625,7 +625,7 @@ hr{{border-color:{t['border']}!important}}
 
 st.markdown(theme_css(st.session_state.get("dark_mode", False)), unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">Francine Screener</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Stock Screener</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Options-liquid stocks across four market tiers, no industry exclusions.</div>', unsafe_allow_html=True)
 
 # Criteria display
@@ -666,11 +666,11 @@ if preset:
     st.rerun()
 
 with st.sidebar:
-    st.markdown('<div class="side-brand"><i></i>Francine</div>', unsafe_allow_html=True)
+    st.markdown('<div class="side-brand"><i></i>Stock Screener</div>', unsafe_allow_html=True)
     st.toggle("Dark mode", key="dark_mode")
     if hasattr(st, "dialog"):
         if st.button("How to use", use_container_width=True):
-            st.dialog("How to use Francine", width="large")(render_wiki)()
+            st.dialog("How to use Stock Screener", width="large")(render_wiki)()
     else:
         with st.popover("How to use", use_container_width=True):
             render_wiki()
@@ -764,7 +764,7 @@ def build_pdf(rows):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, f"Francine Screener Results ({len(rows)} qualified)",
+    pdf.cell(0, 10, f"Stock Screener Results ({len(rows)} qualified)",
              new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", size=9)
     for q in rows:
