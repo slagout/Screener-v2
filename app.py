@@ -147,10 +147,21 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
 
         # Cheap volume check first to skip option-chain calls
         avg_vol = int(info.get("averageVolume") or info.get("averageDailyVolume10Day") or 0)
+        yahoo_err = ""
+        if not avg_vol:
+            # Yahoo sometimes returns a partial info dict; fall back to price history
+            try:
+                hist = stock.history(period="3mo")
+                if not hist.empty:
+                    avg_vol = int(hist["Volume"].mean())
+                else:
+                    yahoo_err = " (Yahoo Finance returned no history)"
+            except Exception as e:
+                yahoo_err = f" (Yahoo Finance error: {type(e).__name__}: {str(e)[:120]})"
         result["avg_volume"] = avg_vol
         result["volume"] = avg_vol
         if avg_vol < min_vol:
-            result["fail_reason"] = f"Avg volume {avg_vol:,} < {min_vol:,}"
+            result["fail_reason"] = f"Avg volume {avg_vol:,} < {min_vol:,}{yahoo_err}"
             return result
 
         # Options liquidity check (need 2+ weeklies with volume)
@@ -296,7 +307,7 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
         return result
 
     except Exception as e:
-        result["fail_reason"] = f"Error: {str(e)[:100]}"
+        result["fail_reason"] = f"Error: {type(e).__name__}: {str(e)[:150]}"
         return result
 
 LOADER_TIPS = [
@@ -676,7 +687,7 @@ def render_results(all_qualified, all_failed):
             with st.expander(f"📊 Failure Summary ({len(all_failed)} total)"):
                 reasons = Counter()
                 for r in all_failed[:200]:
-                    reasons[r.get("fail_reason", "Unknown")[:50]] += 1
+                    reasons[r.get("fail_reason", "Unknown")[:200]] += 1
                 for reason, count in reasons.most_common(10):
                     st.markdown(f"- **{reason}**: {count}")
 
