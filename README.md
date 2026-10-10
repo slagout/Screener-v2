@@ -71,6 +71,12 @@ Optional tuning in `.env`: `FMP_DAILY_LIMIT` (default 250) and cache lifetimes i
 `FMP_CACHE_TTL_QUOTE` (3600), `FMP_CACHE_TTL_PROFILE`, `FMP_CACHE_TTL_INCOME`,
 `FMP_CACHE_TTL_BALANCE`, `FMP_CACHE_TTL_CASHFLOW` (7 days each).
 
+Optional check that your key and the whole pipeline work (uses about 10 of your 250 daily requests):
+
+```
+python smoke_test.py            # or: python smoke_test.py KO PFE --no-options
+```
+
 ### Step 4: Run the app
 
 Type this and press Enter:
