@@ -380,6 +380,49 @@ def _pixel_chart(pct):
             f"preserveAspectRatio='xMidYMid meet' shape-rendering='crispEdges'>{rects}</svg>")
 
 
+WIKI_EXTRA_TIPS = [
+    "Implied volatility (IV) is measured on the expiration closest to 30 days out, near the current price.",
+    "Results are cached for an hour per stock, so re-running the same screen is much faster.",
+    "Downloading a CSV or PDF does not clear your results; run another screen whenever you like.",
+    "Only a new screen replaces the current results.",
+    "A positive net margin and revenue CAGR help filter out unprofitable or shrinking companies.",
+]
+
+
+def render_wiki():
+    st.markdown(
+        "**Francine Screener** finds options-liquid stocks across four market tiers, "
+        "then filters them by price, implied volatility, volume and profitability."
+    )
+    t1, t2, t3, t4 = st.tabs(["Getting started", "Filters", "Results", "Did you know"])
+    with t1:
+        st.markdown(
+            "1. Pick one or more **tiers** in the sidebar (or use the Tier 1 / Tiers 1-3 / All 4 / Clear presets).\n"
+            "2. Set the **price range**, **IV target** and **minimum volume**.\n"
+            "3. Click **Run screen** and watch the pixel candlestick chart fill as the scan progresses.\n"
+            "4. Review the cards, then use **Download Results** to export a CSV or PDF.\n"
+            "5. Change the parameters and run again. Your current results stay until a new screen finishes."
+        )
+    with t2:
+        st.markdown(
+            "- **Price range**: current price must be between From and To.\n"
+            "- **IV target %**: stocks must have IV within the target plus or minus 10 points.\n"
+            "- **Min volume**: minimum average daily share volume.\n"
+            "- **Weekly options**: at least two expirations that have traded volume.\n"
+            "- **Margin**: net profit margin must be above 0%.\n"
+            "- **Blocked regions**: companies based in China, Russia and Latin America are excluded."
+        )
+    with t3:
+        st.markdown(
+            "Each card shows price, IV, average volume, margin, revenue CAGR, sector and a short business summary.\n\n"
+            "The **Failure Summary** lists why stocks were dropped. If it shows Yahoo Finance errors or empty "
+            "option expirations, Yahoo is throttling requests; wait a few minutes and run again."
+        )
+    with t4:
+        for tip in LOADER_TIPS + WIKI_EXTRA_TIPS:
+            st.markdown(f"- {tip}")
+
+
 def render_progress(ph, tiers, idx, tier_pct, detail, found=0):
     pct = max(0, min(100, int(100 * (idx + tier_pct / 100) / len(tiers))))
     tip = LOADER_TIPS[(pct // 10) % len(LOADER_TIPS)]
@@ -542,13 +585,13 @@ section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
 
 def theme_css(dark):
     t = dict(
-        bg="#000000", panel="#0a0a0a", soft="#111111", border="#2e2e2e", text="#ededed",
-        muted="#a1a1a1", btn="#ffffff", btn_text="#000000", btn_hover="#d4d4d4", off="#262626",
-        ok="#0f2a1c", ok_b="#1a4d33", no="#2a1212", no_b="#5c2222",
+        bg="#0d1117", panel="#161b22", soft="#010409", border="#30363d", text="#e6edf3",
+        muted="#8b949e", btn="#1f6feb", btn_text="#ffffff", btn_hover="#388bfd", off="#21262d",
+        ok="#0f2d1c", ok_b="#238636", no="#2d1315", no_b="#da3633",
     ) if dark else dict(
-        bg="#ffffff", panel="#ffffff", soft="#fafafa", border="#eaeaea", text="#000000",
-        muted="#666666", btn="#000000", btn_text="#ffffff", btn_hover="#333333", off="#ededed",
-        ok="#e9f6ee", ok_b="#bfe3cf", no="#fbeeee", no_b="#f1c9c9",
+        bg="#fdf6e3", panel="#fffdf5", soft="#eee8d5", border="#d9d2bb", text="#073642",
+        muted="#657b83", btn="#268bd2", btn_text="#fdf6e3", btn_hover="#1e6fa8", off="#e4dcc3",
+        ok="#e6efd0", ok_b="#b5c77a", no="#f6dcd3", no_b="#e0a28f",
     )
     return f"""<style>
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
@@ -625,6 +668,12 @@ if preset:
 with st.sidebar:
     st.markdown('<div class="side-brand"><i></i>Francine</div>', unsafe_allow_html=True)
     st.toggle("Dark mode", key="dark_mode")
+    if hasattr(st, "dialog"):
+        if st.button("How to use", use_container_width=True):
+            st.dialog("How to use Francine", width="large")(render_wiki)()
+    else:
+        with st.popover("How to use", use_container_width=True):
+            render_wiki()
     st.markdown('<div class="section-label">Tier selection</div>', unsafe_allow_html=True)
     pc = st.columns(2)
     if pc[0].button("Tier 1", use_container_width=True):
