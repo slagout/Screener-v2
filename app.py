@@ -34,7 +34,7 @@ DEFAULT_PRICE_MAX = 50.0
 DEFAULT_IV_MIN = 28.0
 DEFAULT_IV_MAX = 48.0
 DEFAULT_MIN_VOLUME = 2_000_000
-DEEP_SCREEN_WORKERS = 2
+DEEP_SCREEN_WORKERS = 8
 SCREEN_CACHE_TTL = 3600
 
 
@@ -557,10 +557,10 @@ with st.sidebar:
 
     st.markdown('<div class="section-label">Parameters</div>', unsafe_allow_html=True)
     pr = st.columns(2)
-    price_min = pr[0].number_input("From $", min_value=0.0, value=10.0, step=5.0)
-    price_max = pr[1].number_input("To $", min_value=0.0, value=50.0, step=5.0)
-    iv_target = st.number_input("IV target %", min_value=0.0, value=35.0, step=5.0)
-    min_vol = st.number_input("Min volume", min_value=0, value=2000000, step=500000)
+    price_min = pr[0].number_input("From $", min_value=0.0, value=5.0, step=5.0)
+    price_max = pr[1].number_input("To $", min_value=0.0, value=20.0, step=5.0)
+    iv_target = st.number_input("IV target %", min_value=0.0, value=30.0, step=5.0)
+    min_vol = st.number_input("Min volume", min_value=0, value=1000000, step=500000)
 
     iv_min = max(0, iv_target - 10)
     iv_max = iv_target + 10
