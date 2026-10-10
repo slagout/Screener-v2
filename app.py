@@ -337,6 +337,49 @@ _SPARKLE = ("<svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke=
             "<path d='M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z'/></svg>")
 
 
+def _build_pixel_candles(n=22, rows=16, seed=7):
+    # Deterministic random-walk candles drawn on a pixel grid: (col, row, color)
+    import random
+    rnd = random.Random(seed)
+    px, level = [], rows * 0.7
+    for c in range(n):
+        o = level
+        cl = max(2.0, min(rows - 3.0, o + rnd.uniform(-3.2, 3.2) - 0.25))
+        level = cl
+        hi = max(o, cl) + rnd.uniform(0.5, 2.5)
+        lo = min(o, cl) - rnd.uniform(0.5, 2.5)
+        up = cl >= o
+        base = ["#1f9d63", "#4fbf8a", "#9ddcbc"] if up else ["#d64545", "#ff6b3d", "#ffb59c"]
+        x0 = c * 4
+        for r in range(rows):
+            y = rows - 1 - r
+            if lo <= r <= hi:
+                in_body = min(o, cl) <= r <= max(o, cl)
+                shade = base[min(2, abs(r - int((o + cl) / 2)) // 2)] if in_body else base[2]
+                if in_body:
+                    for dx in range(3):
+                        px.append((x0 + dx, y, shade))
+                else:
+                    px.append((x0 + 1, y, shade))
+    return px, n * 4
+
+
+_PIXELS, _PIXEL_COLS = _build_pixel_candles()
+_PIXEL_ROWS = 16
+
+
+def _pixel_chart(pct):
+    s = 10
+    edge = _PIXEL_COLS * pct / 100
+    rects = "".join(
+        f"<rect x='{x*s}' y='{y*s}' width='{s-1}' height='{s-1}' "
+        + (f"fill='{col}'/>" if x < edge else "fill='#e9e5df'/>")
+        for x, y, col in _PIXELS
+    )
+    return (f"<svg class='pixel-chart' viewBox='0 0 {_PIXEL_COLS*s} {_PIXEL_ROWS*s}' "
+            f"preserveAspectRatio='xMidYMid meet' shape-rendering='crispEdges'>{rects}</svg>")
+
+
 def render_progress(ph, tiers, idx, tier_pct, detail, found=0):
     pct = max(0, min(100, int(100 * (idx + tier_pct / 100) / len(tiers))))
     tip = LOADER_TIPS[(pct // 10) % len(LOADER_TIPS)]
@@ -349,8 +392,7 @@ def render_progress(ph, tiers, idx, tier_pct, detail, found=0):
     ph.markdown(
         f"<div class='loader'><div class='loader-badge'>{_SPARKLE}</div>"
         f"<div class='loader-title'>Screening {html.escape(tiers[idx])}…</div>"
-        f"<div class='loader-track'><div class='loader-fill' style='width:{pct}%'></div>"
-        f"<span class='loader-pct'>{pct}%</span></div>"
+        f"<div class='pixel-wrap'>{_pixel_chart(pct)}<span class='pixel-pct'>{pct}%</span></div>"
         f"<div class='loader-detail'>{html.escape(detail)}</div>"
         f"<div class='loader-tip'><b>Did you know?</b>{html.escape(tip)}</div>"
         f"<div class='loader-cards'>{cards}</div></div>",
@@ -484,6 +526,9 @@ section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
 .loader-track{position:relative;height:18px;max-width:520px;margin:0 auto;background:#ffe9e1;border-radius:999px;overflow:hidden}
 .loader-fill{height:100%;background:#ff6b3d;border-radius:999px;transition:width .3s ease}
 .loader-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.68rem;font-weight:600;color:#1f2328}
+.pixel-wrap{max-width:560px;margin:0 auto;text-align:center}
+.pixel-chart{width:100%;height:auto;display:block}
+.pixel-pct{display:block;margin-top:0.5rem;font-size:0.78rem;font-weight:600;letter-spacing:0.08em;color:#1f2328;font-variant-numeric:tabular-nums}
 .loader-detail{margin-top:0.9rem;font-size:0.82rem;color:#6b7280}
 .loader-tip{margin:1.6rem auto 0;max-width:420px;font-size:0.76rem;color:#6b7280;line-height:1.5}
 .loader-tip b{display:block;color:#1f2328;font-weight:600;margin-bottom:0.1rem}
