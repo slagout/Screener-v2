@@ -7,11 +7,6 @@ insurance, and financial services.
 **Key difference from V2:** V3 also **requires a weekly options chain** —
 companies with only monthly options are rejected.
 
-> **Data source:** prices, company profile and financial statements come from Yahoo Finance
-> (via `yfinance`) — free, no API key. It is an unofficial feed, so Yahoo can occasionally
-> rate-limit very large scans; results are cached in `./cache/` so re-runs are fast and gentle.
-> A full S&P 500 scan takes a few minutes.
-
 ---
 
 ## 🚀 HOW TO RUN — Step by Step (takes ~5 minutes)
@@ -52,18 +47,6 @@ pip install -r requirements.txt
 
 (You'll see `(.venv)` appear at the start of the line — that's normal and good.)
 
-### Step 3b: (Optional) check everything works
-
-No API key is needed. This quick test pulls live data for AAPL and MSFT and runs the whole pipeline:
-
-```
-python smoke_test.py            # or: python smoke_test.py KO PFE --no-options
-```
-
-Optional cache lifetimes in seconds (environment variables): `YAHOO_CACHE_TTL_QUOTE` (3600),
-`YAHOO_CACHE_TTL_PROFILE`, `YAHOO_CACHE_TTL_INCOME`, `YAHOO_CACHE_TTL_BALANCE`,
-`YAHOO_CACHE_TTL_CASHFLOW` (7 days each).
-
 ### Step 4: Run the app
 
 Type this and press Enter:
@@ -78,10 +61,10 @@ If it doesn't open automatically, open your browser and type that address yourse
 
 ### Step 5: Use it
 
-1. Enter a **price range** (From: $25 → To: $75, or any range you want) and a minimum IV
-2. Click **Run screen**
-3. Wait while it works through the S&P 500
-4. View the results — every company that passes all filters, with full details
+1. Enter a **price range** (From: $25 → To: $75, or any range you want)
+2. Click **🚀 RUN SCREEN**
+3. Wait ~2-3 minutes while it scans the S&P 500
+4. View the results — up to 5 qualified companies with full details
 
 ### When you're done
 
@@ -101,9 +84,7 @@ Press `Ctrl + C` in the Command Prompt window to stop the app. Close the window.
 | 52-Week High | ≥ 25% below high |
 | Implied Volatility | ≥ 30% |
 | Altman-Z Score | > 3.0 |
-| Financial Data | Most recent fiscal year, annual statements (Yahoo Finance) |
-| Data sources | Prices, profile, statements, weekly options and IV: Yahoo Finance via yfinance. S&P 500 list: open dataset, cached daily in `sp500.csv`. |
-| Failures | A fetch failure is UNKNOWN and the ticker is skipped, never passed |
+| Financial Data | Most recent fiscal year (SEC filings via Yahoo Finance) |
 
 A company appears in the results **only if it passes every single check**.
 
@@ -142,15 +123,12 @@ different ports: `streamlit run app.py --server.port 8501` for V2 and
 | Browser doesn't open | Type `http://localhost:8501` manually in any browser |
 | App says "No companies found" | No S&P 500 company currently passes ALL V3 filters in your range. Try a wider range |
 | Port already in use | Run `streamlit run app.py --server.port 8502` instead |
-| Many tickers show "UNKNOWN" or "Skipped (Yahoo unavailable)" | Yahoo rate-limited the scan. Wait a few minutes and run again — cached data is reused |
 
 ## 📁 What's in the folder
 
 ```
 company-screening-tool-v3/
 ├── app.py              ← The V3 app itself
-├── data_sources/       ← yahoo.py (quote/profile/statements), options.py (weekly/IV), constituents.py (S&P 500 list)
-├── smoke_test.py      ← Optional end-to-end check
 ├── requirements.txt    ← What the app needs to install
 └── README.md           ← This file
 ```
