@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jeffrey - Francine Screener</title>
+    <link rel="stylesheet" href="/assets/css/styles.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <header class="dashboard-header">
+            <div class="header-left">
+                <h1>Francine Screener</h1>
+                <span class="user-role">Administrator</span>
+            </div>
+            <div class="header-right">
+                <span class="user-name">Jeffrey</span>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </header>
+
+        <div class="dashboard-content">
+            <nav class="sidebar">
+                <ul>
+                    <li><a href="#" class="active">Dashboard</a></li>
+                    <li><a href="#">Screening</a></li>
+                    <li><a href="#">Reports</a></li>
+                    <li><a href="#">Users</a></li>
+                    <li><a href="#">Settings</a></li>
+                </ul>
+            </nav>
+
+            <main class="main-content">
+                <div class="welcome-section">
+                    <h2>Welcome, Jeffrey</h2>
+                    <p>Administrator dashboard for institutional stock screening</p>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Total Screens</h3>
+                        <p>1,247</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Qualified Stocks</h3>
+                        <p>89</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Active Users</h3>
+                        <p>12</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>System Status</h3>
+                        <p>Operational</p>
+                    </div>
+                </div>
+
+                <div class="screening-section">
+                    <h3>Quick Screening</h3>
+                    <div class="screening-form">
+                        <div class="form-group">
+                            <label>Price Range ($)</label>
+                            <input type="text" placeholder="From - To" value="$10 - $200">
+                        </div>
+                        <div class="form-group">
+                            <label>IV Range (%)</label>
+                            <input type="text" placeholder="Min - Max" value="28 - 48%">
+                        </div>
+                        <div class="form-group">
+                            <label>Min Volume</label>
+                            <input type="text" placeholder="Shares" value="2,000,000">
+                        </div>
+                        <button class="run-button">RUN FRANCINE SCREEN v2</button>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+    
+    <script>
+        function logout() {
+            localStorage.removeItem('currentUser');
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+</html>
