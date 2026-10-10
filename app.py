@@ -602,10 +602,10 @@ with st.sidebar:
 
     st.markdown('<div class="section-label">Parameters</div>', unsafe_allow_html=True)
     pr = st.columns(2)
-    price_min = pr[0].number_input("From $", min_value=0.0, value=5.0, step=5.0)
-    price_max = pr[1].number_input("To $", min_value=0.0, value=20.0, step=5.0)
-    iv_target = st.number_input("IV target %", min_value=0.0, value=30.0, step=5.0)
-    min_vol = st.number_input("Min volume", min_value=0, value=1000000, step=500000)
+    price_min = pr[0].number_input("From $", min_value=0.0, value=10.0, step=5.0)
+    price_max = pr[1].number_input("To $", min_value=0.0, value=50.0, step=5.0)
+    iv_target = st.number_input("IV target %", min_value=0.0, value=35.0, step=5.0)
+    min_vol = st.number_input("Min volume", min_value=0, value=2000000, step=500000)
 
     iv_min = max(0, iv_target - 10)
     iv_max = iv_target + 10
