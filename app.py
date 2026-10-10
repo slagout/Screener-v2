@@ -299,22 +299,34 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
         result["fail_reason"] = f"Error: {str(e)[:100]}"
         return result
 
+LOADER_TIPS = [
+    "The price filter runs first, so the slower options checks only run on stocks in your range.",
+    "Implied volatility (IV) is the market's estimate of how much a stock may move.",
+    "Weekly options give you more frequent expirations to work with.",
+    "Many stocks are checked in parallel to keep the scan fast.",
+]
+_SPARKLE = ("<svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='#ff6b3d' stroke-width='2' "
+            "stroke-linecap='round' stroke-linejoin='round'><path d='M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z'/>"
+            "<path d='M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z'/></svg>")
+
+
 def render_progress(ph, tiers, idx, tier_pct, detail, found=0):
     pct = max(0, min(100, int(100 * (idx + tier_pct / 100) / len(tiers))))
-    steps = ""
+    tip = LOADER_TIPS[(pct // 10) % len(LOADER_TIPS)]
+    cards = ""
     for i, k in enumerate(tiers):
-        state = "done" if i < idx else ("active" if i == idx else "")
-        mark = "\u2713" if i < idx else str(i + 1)
-        steps += (f"<div class='loader-step {state}'><span class='loader-dot'>{mark}</span>"
-                  f"{html.escape(TIERS[k]['label'])}</div>")
+        state = "Done" if i < idx else ("Scanning" if i == idx else "Queued")
+        cards += (f"<div class='loader-card'><b>{state}</b>"
+                  f"<span>{html.escape(TIERS[k]['label'])}</span></div>")
+    cards += f"<div class='loader-card'><b class='pos'>{found}</b><span>Qualified so far</span></div>"
     ph.markdown(
-        f"<div class='loader'><div class='loader-icon'></div>"
-        f"<div class='loader-title'>Screening {html.escape(tiers[idx])}</div>"
+        f"<div class='loader'><div class='loader-badge'>{_SPARKLE}</div>"
+        f"<div class='loader-title'>Screening {html.escape(tiers[idx])}…</div>"
         f"<div class='loader-track'><div class='loader-fill' style='width:{pct}%'></div>"
         f"<span class='loader-pct'>{pct}%</span></div>"
         f"<div class='loader-detail'>{html.escape(detail)}</div>"
-        f"<div class='loader-steps'>{steps}</div>"
-        f"<div class='loader-found'><b>{found}</b> qualified so far</div></div>",
+        f"<div class='loader-tip'><b>Did you know?</b>{html.escape(tip)}</div>"
+        f"<div class='loader-cards'>{cards}</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -425,23 +437,20 @@ section[data-testid="stSidebar"]{background:#fff;border-right:1px solid #e6e3de}
 section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
 .side-brand{font-weight:700;font-size:1.1rem;color:#1f2328;margin-bottom:0.5rem}
 .side-brand i{display:inline-block;width:10px;height:10px;border-radius:3px;background:#ff6b3d;margin-right:8px}
-.loader{background:#fff;border:1px solid #e6e3de;border-radius:16px;padding:2rem 1.5rem;margin:0.8rem 0;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-.loader-icon{width:36px;height:36px;margin:0 auto 0.9rem;border-radius:50%;border:3px solid #ffe3d9;border-top-color:#ff6b3d;animation:spin .9s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
+.loader{padding:3rem 0.5rem 1.5rem;margin:0.8rem 0;text-align:center}
+.loader-badge{width:46px;height:46px;margin:0 auto 1rem;border-radius:50%;background:#fff0ea;display:flex;align-items:center;justify-content:center;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(1.1)}}
 .loader-title{font-size:1.05rem;font-weight:600;color:#1f2328;margin-bottom:1rem}
 .loader-track{position:relative;height:18px;max-width:520px;margin:0 auto;background:#ffe9e1;border-radius:999px;overflow:hidden}
 .loader-fill{height:100%;background:#ff6b3d;border-radius:999px;transition:width .3s ease}
 .loader-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.68rem;font-weight:600;color:#1f2328}
 .loader-detail{margin-top:0.9rem;font-size:0.82rem;color:#6b7280}
-.loader-found{margin-top:0.2rem;font-size:0.8rem;color:#6b7280}
-.loader-found b{color:#1f9d63}
-.loader-steps{display:flex;flex-direction:column;gap:0.4rem;max-width:260px;margin:1.1rem auto 0.6rem;text-align:left}
-.loader-step{display:flex;align-items:center;gap:0.6rem;font-size:0.82rem;color:#9ca3af}
-.loader-step.active{color:#1f2328;font-weight:600}
-.loader-step.done{color:#1f9d63}
-.loader-dot{width:20px;height:20px;border-radius:50%;border:1.5px solid currentColor;display:inline-flex;align-items:center;justify-content:center;font-size:0.66rem}
-.loader-step.active .loader-dot{background:#ff6b3d;border-color:#ff6b3d;color:#fff}
-.loader-step.done .loader-dot{background:#e9f6ee}
+.loader-tip{margin:1.6rem auto 0;max-width:420px;font-size:0.76rem;color:#6b7280;line-height:1.5}
+.loader-tip b{display:block;color:#1f2328;font-weight:600;margin-bottom:0.1rem}
+.loader-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.7rem;margin-top:2.2rem;text-align:left}
+.loader-card{background:#fff;border:1px solid #e6e3de;border-radius:10px;padding:0.8rem 0.9rem}
+.loader-card b{display:block;font-size:1.2rem;font-weight:700;color:#1f2328}
+.loader-card span{font-size:0.76rem;color:#6b7280}
 </style>
 """, unsafe_allow_html=True)
 
