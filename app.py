@@ -299,42 +299,45 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
         result["fail_reason"] = f"Error: {str(e)[:100]}"
         return result
 
-def render_progress(ph, title, pct, detail, found=0):
-    pct = max(0, min(100, int(pct)))
+def render_progress(ph, tiers, idx, tier_pct, detail, found=0):
+    pct = max(0, min(100, int(100 * (idx + tier_pct / 100) / len(tiers))))
+    steps = ""
+    for i, k in enumerate(tiers):
+        state = "done" if i < idx else ("active" if i == idx else "")
+        mark = "\u2713" if i < idx else str(i + 1)
+        steps += (f"<div class='loader-step {state}'><span class='loader-dot'>{mark}</span>"
+                  f"{html.escape(TIERS[k]['label'])}</div>")
     ph.markdown(
         f"<div class='loader'><div class='loader-icon'></div>"
-        f"<div class='loader-title'>{html.escape(title)}</div>"
+        f"<div class='loader-title'>Screening {html.escape(tiers[idx])}</div>"
         f"<div class='loader-track'><div class='loader-fill' style='width:{pct}%'></div>"
         f"<span class='loader-pct'>{pct}%</span></div>"
         f"<div class='loader-detail'>{html.escape(detail)}</div>"
+        f"<div class='loader-steps'>{steps}</div>"
         f"<div class='loader-found'><b>{found}</b> qualified so far</div></div>",
         unsafe_allow_html=True,
     )
 
 # ── TIER SCAN (V2 exact pipeline: industry filter → batch price → deep) ──
 def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
-              iv_min, iv_max, min_vol):
+              iv_min, iv_max, min_vol, report):
     qualified = []
     failed = []
-    progress_placeholder = st.empty()
-    render_progress(progress_placeholder, f"Screening {tier_name}", 0, "Loading tickers")
+    report(0, f"Loaded {len(tickers)} tickers", 0)
 
     if not tickers:
-        progress_placeholder.empty()
         return [], []
 
     # 1. Industry/name pre-filter (V2 exact)
     passed = tier_name_filter(tickers, sectors, name_map)
     if not passed:
-        progress_placeholder.empty()
         return [], []
 
     # 2. Batch price filter (yf.download in groups of 300); occupies 0-20% of the bar
     priced = []
     for i in range(0, len(passed), 300):
         batch = passed[i:i + 300]
-        render_progress(progress_placeholder, f"Screening {tier_name}",
-                        20 * i / len(passed), f"Filtering {len(passed)} tickers by price")
+        report(20 * i / len(passed), f"Filtering {len(passed)} tickers by price", 0)
         try:
             data = yf.download(
                 ",".join(batch),
@@ -358,7 +361,6 @@ def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
             continue
 
     if not priced:
-        progress_placeholder.empty()
         return [], []
 
     # 3. Deep screen in parallel (20-100% of the bar); results re-sorted to input order
@@ -374,13 +376,11 @@ def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
             results[futures[fut]] = result
             done += 1
             n_q = sum(1 for r in results.values() if r["qualified"])
-            render_progress(progress_placeholder, f"Screening {tier_name}",
-                            20 + 80 * done / total_priced,
-                            f"Deep screening {done} of {total_priced} candidates", n_q)
+            report(20 + 80 * done / total_priced,
+                   f"Deep screening {done} of {total_priced} candidates", n_q)
     for i in sorted(results):
         (qualified if results[i]["qualified"] else failed).append(results[i])
 
-    progress_placeholder.empty()
     return qualified, failed
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -435,6 +435,13 @@ section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
 .loader-detail{margin-top:0.9rem;font-size:0.82rem;color:#6b7280}
 .loader-found{margin-top:0.2rem;font-size:0.8rem;color:#6b7280}
 .loader-found b{color:#1f9d63}
+.loader-steps{display:flex;flex-direction:column;gap:0.4rem;max-width:260px;margin:1.1rem auto 0.6rem;text-align:left}
+.loader-step{display:flex;align-items:center;gap:0.6rem;font-size:0.82rem;color:#9ca3af}
+.loader-step.active{color:#1f2328;font-weight:600}
+.loader-step.done{color:#1f9d63}
+.loader-dot{width:20px;height:20px;border-radius:50%;border:1.5px solid currentColor;display:inline-flex;align-items:center;justify-content:center;font-size:0.66rem}
+.loader-step.active .loader-dot{background:#ff6b3d;border-color:#ff6b3d;color:#fff}
+.loader-step.done .loader-dot{background:#e9f6ee}
 </style>
 """, unsafe_allow_html=True)
 
@@ -525,9 +532,10 @@ if run:
     else:
         all_qualified = []
         all_failed = []
+        loader_ph = st.empty()
 
-        for tier_name in selected:
-            st.markdown(f"### 🔍 {TIERS[tier_name]['label']}")
+        for tier_idx, tier_name in enumerate(selected):
+            render_progress(loader_ph, selected, tier_idx, 0, "Loading tickers", len(all_qualified))
 
             sectors = {}
             name_map = {}
@@ -542,18 +550,21 @@ if run:
                 if not tickers:
                     st.info("No stocks loaded for Rest of Market.")
                     continue
-                st.caption(f"Loaded {len(tickers)} tickers from NASDAQ/NYSE")
             else:
                 tickers, sectors = load_index(tier_name)
                 if not tickers:
                     st.warning(f"Could not load {tier_name}.")
                     continue
-                st.caption(f"Loaded {len(tickers)} tickers from Wikipedia")
+
+            def report(pct, detail, n_q, _i=tier_idx, _base=len(all_qualified)):
+                render_progress(loader_ph, selected, _i, pct, detail, _base + n_q)
 
             q, f = scan_tier(tier_name, tickers, sectors, name_map,
-                             price_min, price_max, iv_min, iv_max, min_vol)
+                             price_min, price_max, iv_min, iv_max, min_vol, report)
             all_qualified.extend(q)
             all_failed.extend(f)
+
+        loader_ph.empty()
 
         # ── RESULTS ────────────────────────────────────────────────────
         st.markdown("---")
