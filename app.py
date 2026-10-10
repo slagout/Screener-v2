@@ -1,329 +1,621 @@
 """
-FRANCINE SCREENER v2 — Master Options & Fundamentals Screener
-Screens the S&P 500 using Francine's updated institutional methodology.
+FRANCINE SCREENER V3 — Tiered Desktop App
+=========================================
+V2's EXACT screening logic + tiered UI — NO industry exclusions.
+All industry/sector/name blocks from V2 removed per Tom's directive.
+Identical to V2 (francine_current_discovery.py) in deep_screen, IV calc,
+margin, volume, CAGR, and options-liquidity checks.
 """
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import requests
-import time
 import io
-from datetime import datetime
+import time
+import re
+import html
+import os
+import sys
+from datetime import datetime, timedelta
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-st.set_page_config(page_title="Francine Screener v2", page_icon="★", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Francine Screener V3", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
-EXCLUDED_INDUSTRIES = ["banks","banking","bank","insurance","insurer","pharmaceuticals","pharmaceutical","pharma","tobacco","marijuana","cannabis","vaping","lending","consumer lending","mortgage","financial services","diversified financial","asset management"]
-EXCLUDED_SECTORS = ["financial services","banks","insurance"]
-EXCLUDED_COUNTRIES = ["china","russia","north korea","brazil","argentina","mexico","chile","colombia","peru","venezuela"]
-PRIORITY_COUNTRIES = ["united states","canada","united kingdom","germany","france","switzerland","netherlands","sweden","denmark","finland","norway","belgium","spain","italy","ireland","australia","new zealand","japan","south korea","austria","luxembourg","singapore","israel"]
-# MAX_QUALIFIED = 20 — removed; show all qualified companies per Francine's spec
+# ── ALL INDUSTRY/SECTOR/NAME EXCLUSIONS REMOVED per Tom's directive ──
+# V3 scans ALL industries: pharma, banks, insurance, tobacco, cannabis,
+# REITs, financial services no longer blocked.
+EXCLUDED_COUNTRIES = [
+    "china", "russia", "north korea", "brazil", "argentina",
+    "mexico", "chile", "colombia", "peru", "venezuela",
+]
+DEFAULT_PRICE_MIN = 10.0
+DEFAULT_PRICE_MAX = 50.0
+DEFAULT_IV_MIN = 28.0
+DEFAULT_IV_MAX = 48.0
+DEFAULT_MIN_VOLUME = 2_000_000
+DEEP_SCREEN_WORKERS = 8
+
+# ── Tier definitions ──────────────────────────────────────────────────
+TIERS = {
+    "S&P 500":  {"label":"Tier 1 — S&P 500","desc":"~503 stocks","color":"#42a5f5"},
+    "S&P 400":  {"label":"Tier 2 — S&P 400","desc":"~400 stocks","color":"#66bb6a"},
+    "S&P 600":  {"label":"Tier 3 — S&P 600","desc":"~600 stocks","color":"#f9a825"},
+    "Rest":     {"label":"Tier 4 — Rest of Market","desc":"~5,500 stocks","color":"#ab47bc"},
+}
+
+# ── Tier loaders (V2 exact) ────────────────────────────────────────────
+def load_index(name):
+    pages = {"S&P 500":"https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+             "S&P 400":"https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+             "S&P 600":"https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"}
+    url = pages.get(name)
+    if not url: return [], {}
+    h = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
+    for attempt in range(2):
+        try:
+            r = requests.get(url, headers=h, timeout=30)
+            r.raise_for_status()
+            df = pd.read_html(io.StringIO(r.text))[0]
+            tk = df["Symbol"].str.replace(".","-",regex=False).tolist()
+            sc = "GICS Sector" if "GICS Sector" in df.columns else df.columns[2]
+            sectors = dict(zip(tk, df[sc].fillna("").tolist()))
+            return tk, sectors
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(2)
+                continue
+            st.warning(f"Could not load {name} (attempt {attempt+1}): {e}")
+            return [], {}
 
 @st.cache_data(ttl=3600)
-def get_index_tickers(index_name):
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
-        urls = {
-            "S&P 500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            "S&P 400": "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
-            "S&P 600": "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies",
-        }
-        resp = requests.get(urls[index_name], headers=headers, timeout=15)
-        resp.raise_for_status()
-        df = pd.read_html(io.StringIO(resp.text))[0]
-        return df["Symbol"].str.replace(".","-",regex=False).tolist()
-    except Exception as e:
-        st.error(f"Failed to load {index_name}: {e}")
-        return []
+def get_tickers(name): return load_index(name)[0]
 
-@st.cache_data(ttl=3600)
-def get_rest_of_market_tickers():
-    """Load liquid US-listed symbols from Nasdaq's public screener endpoint."""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://www.nasdaq.com",
-            "Referer": "https://www.nasdaq.com/",
-        }
-        resp = requests.get(
-            "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&market=stocks",
-            headers=headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        rows = (resp.json().get("data") or {}).get("rows") or []
-        return [row["symbol"].replace(".", "-") for row in rows if row.get("symbol")]
-    except Exception as e:
-        st.warning(f"Could not load the rest of the market: {e}")
-        return []
+def get_rest_tickers(exclude):
+    return _rest_tickers(frozenset(exclude))
 
-def get_universe_tickers(universe):
-    if universe == "S&P 500":
-        return get_index_tickers("S&P 500")
-    if universe == "S&P 400":
-        return get_index_tickers("S&P 400")
-    if universe == "S&P 600":
-        return get_index_tickers("S&P 600")
-    if universe == "Rest of Market":
-        return get_rest_of_market_tickers()
+@st.cache_data(ttl=3600, show_spinner=False)
+def _rest_tickers(exclude):
+    tk = set(); h = {"User-Agent":"Mozilla/5.0"}
+    for url,label in [("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt","NASDAQ"),
+                      ("https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt","NYSE/AMEX")]:
+        try:
+            r = requests.get(url,headers=h,timeout=30); r.raise_for_status()
+            lines = r.text.strip().split("\n")
+            dl = [l for l in lines if l and not l.startswith("File Creation")]
+            if len(dl)<2: continue
+            cols = dl[0].split("|" if "|" in dl[0] else "\t")
+            cm = {c.strip().lower():i for i,c in enumerate(cols)}
+            si = cm.get("symbol", cm.get("act symbol",0))
+            ti = cm.get("test issue",None); ei = cm.get("etf",None)
+            for line in dl[1:]:
+                p = line.split("|" if "|" in line else "\t")
+                if len(p)<=si: continue
+                s = p[si].strip().replace(".","-")
+                if not re.match(r"^[A-Z0-9-]{1,5}$",s): continue
+                if ti and len(p)>ti and p[ti].strip().upper()=="Y": continue
+                if ei and len(p)>ei and p[ei].strip().upper()=="Y": continue
+                if s in exclude: continue
+                tk.add(s)
+        except: pass
+    return sorted(tk)
 
-    seen = set()
-    tickers = []
-    for tier in ("S&P 500", "S&P 400", "S&P 600", "Rest of Market"):
-        for ticker in get_universe_tickers(tier):
-            if ticker not in seen:
-                seen.add(ticker)
-                tickers.append(ticker)
-    return tickers
+# ── V2 EXACT filter functions ─────────────────────────────────────────
+def industry_pass(info):
+    """All industries allowed — exclusions removed per V3 spec."""
+    return True
 
-def passes_industry(info):
-    s = (info.get("sector") or "").lower(); i = (info.get("industry") or "").lower()
-    for e in EXCLUDED_SECTORS:
-        if e in s: return False, f"Excluded sector: {info.get('sector')}"
-    for e in EXCLUDED_INDUSTRIES:
-        if e in i: return False, f"Excluded industry: {info.get('industry')}"
-    return True, ""
-
-def passes_geo(info):
+def geo_pass(info):
     c = (info.get("country") or "").lower()
-    if not c: return False, "No country data"
+    if not c: return True
     for e in EXCLUDED_COUNTRIES:
-        if e in c: return False, f"Excluded country: {info.get('country')}"
-    return True, ""
+        if e in c: return False
+    return True
 
-def passes_price(info, lo, hi):
-    p = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
-    if p is None: return False, "No price", None
-    if p < lo or p > hi: return False, f"${p:.2f} outside range", p
-    return True, "", p
+# ── V2 EXACT tier_name_filter ─────────────────────────────────────────
+def tier_name_filter(tickers, sectors, name_map):
+    """First-pass filter — no industry/sector exclusions in V3."""
+    return list(tickers)
 
-def get_iv(ticker):
+# ── V2 EXACT deep_screen ──────────────────────────────────────────────
+def deep_screen(ticker, price, iv_min, iv_max, min_vol):
+    result = {
+        "ticker": ticker, "qualified": False, "fail_reason": "",
+        "company_name": "", "sector": "", "industry": "",
+        "price": price, "iv": None, "volume": 0,
+        "avg_volume": 0, "margin": None, "cagr": None,
+        "driver": "", "options_liquid": False,
+    }
     try:
-        s = yf.Ticker(ticker); eds = s.options
-        if not eds: return None,None
-        px = s.info.get("currentPrice") or s.info.get("regularMarketPrice")
-        if not px: return None,None
-        for exp in eds[:10]:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        if not info:
+            result["fail_reason"] = "No data"
+            return result
+
+        result["company_name"] = info.get("longName") or info.get("shortName") or ticker
+        result["sector"] = info.get("sector") or "N/A"
+        result["industry"] = info.get("industry") or "N/A"
+
+        # Industry/sector/name filter
+        if not industry_pass(info):
+            result["fail_reason"] = "Industry excluded"
+            return result
+        if not geo_pass(info):
+            result["fail_reason"] = "Geography excluded"
+            return result
+
+        # Cheap volume check first to skip option-chain calls
+        avg_vol = int(info.get("averageVolume") or info.get("averageDailyVolume10Day") or 0)
+        result["avg_volume"] = avg_vol
+        result["volume"] = avg_vol
+        if avg_vol < min_vol:
+            result["fail_reason"] = f"Avg volume {avg_vol:,} < {min_vol:,}"
+            return result
+
+        # Options liquidity check (need 2+ weeklies with volume)
+        exp_dates = stock.options
+        if not exp_dates or len(exp_dates) < 2:
+            result["fail_reason"] = "No weekly options chain"
+            return result
+
+        weeks_with_volume = 0
+        for exp in exp_dates[:10]:
             try:
-                o = s.option_chain(exp); c = o.calls; p = o.puts
-                if not c.empty:
-                    c["d"]=abs(c["strike"]-px); nc=c.loc[c["d" ].idxmin()]; ivc=nc.get("impliedVolatility")
-                    if not p.empty:
-                        p["d"]=abs(p["strike"]-px); np=p.loc[p["d" ].idxmin()]; ivp=np.get("impliedVolatility")
-                        iv=(ivc+ivp)/2 if ivc and ivp else ivc or ivp
-                    else: iv=ivc
-                    if iv and iv>0.05: return float(iv)*100, f"Chain {exp}"
-            except: pass
-        return None,None
-    except: return None,None
+                chain = stock.option_chain(exp)
+                if (chain.calls["volume"].sum() + chain.puts["volume"].sum()) > 0:
+                    weeks_with_volume += 1
+                    if weeks_with_volume >= 2:
+                        break
+            except Exception:
+                pass
+        if weeks_with_volume < 2:
+            result["fail_reason"] = "Low options activity"
+            return result
+        result["options_liquid"] = True
 
-def check_options(ticker):
-    try:
-        s=yf.Ticker(ticker); eds=s.options
-        if not eds or len(eds)<2: return False,0,0
-        o=s.option_chain(eds[0]); c=o.calls; p=o.puts
-        if c.empty or p.empty: return False,len(eds),0
-        wk=0
-        for exp in eds[:10]:
-            try:
-                ch=s.option_chain(exp)
-                if (ch.calls["volume"].sum()+ch.puts["volume"].sum())>0: wk+=1
-            except: pass
-        tv=int(c["volume"].sum()+p["volume"].sum())
-        return wk>=2,len(eds),tv
-    except: return False,0,0
+        # IV calculation (V2 exact: custom formula → yfinance fallback)
+        iv_found = False
+        now = datetime.now()
+        target_30d = now + timedelta(days=30)
 
-def get_margins(ticker):
-    try:
-        s=yf.Ticker(ticker); ix=s.financials
-        if ix is None or ix.empty: return None,None
-        yr=ix.iloc[:,0]; oi=None; rev=None
-        for k in ["Operating Income","EBIT","Operating Profit"]:
-            if k in yr.index: oi=float(yr.loc[k]); break
-        for k in ["Total Revenue","Revenue"]:
-            if k in yr.index: rev=float(yr.loc[k]); break
-        if oi is not None and rev and rev!=0: return (oi/rev)*100,ix.columns[0]
-        return None,None
-    except: return None,None
+        try:
+            best_exp = min(exp_dates, key=lambda e: abs(
+                (datetime.strptime(e[:10], "%Y-%m-%d") - target_30d).days))
+            chain_30d = stock.option_chain(best_exp)
+            tte = (datetime.strptime(best_exp[:10], "%Y-%m-%d") - now).days / 365.0
 
-def get_cagr(ticker):
-    try:
-        s=yf.Ticker(ticker); ix=s.financials
-        if ix is None or ix.empty or ix.shape[1]<3: return None,None
-        revs=[]
-        for i in range(min(4,ix.shape[1])):
-            col=ix.iloc[:,i]
-            for k in ["Total Revenue","Revenue"]:
-                if k in col.index: revs.append(float(col.loc[k])); break
-            else: revs.append(None)
-        revs=[r for r in revs if r]
-        if len(revs)<3: return None,None
-        n=len(revs)-1
-        if revs[-1]<=0 or revs[0]<=0: return None,None
-        return round(((revs[0]/revs[-1])**(1.0/n)-1)*100,2),f"{n}-yr CAGR"
-    except: return None,None
+            if not chain_30d.calls.empty:
+                chain_30d.calls["dist"] = abs(chain_30d.calls["strike"] - price)
+                nearest_call = chain_30d.calls.loc[chain_30d.calls["dist"].idxmin()]
+                call_mid = (float(nearest_call.get("bid", 0)) + float(nearest_call.get("ask", 0))) / 2
+                call_price = call_mid if call_mid > 0.01 else float(nearest_call.get("lastPrice", 0))
+                if call_price > 0.01 and tte > 0.001:
+                    iv_approx = call_price / (price * 0.4 * (tte ** 0.5))
+                    if 0.01 < iv_approx < 5.0:
+                        iv_pct = iv_approx * 100
+                        if iv_min <= iv_pct <= iv_max:
+                            result["iv"] = round(iv_pct, 1)
+                            iv_found = True
+                        else:
+                            result["fail_reason"] = f"IV {iv_pct:.1f}% outside {iv_min}-{iv_max}% range"
+                            return result
 
-def get_summary(info,ticker):
-    s=info.get("longBusinessSummary") or ""
-    if s:
-        ss=". ".join(x.strip() for x in s.replace("\n"," ").split(".")[:3] if x.strip())
-        return ss[:250]+("..." if len(ss)>250 else "")
-    return f"{ticker}"
+            if not iv_found and not chain_30d.puts.empty:
+                chain_30d.puts["dist"] = abs(chain_30d.puts["strike"] - price)
+                nearest_put = chain_30d.puts.loc[chain_30d.puts["dist"].idxmin()]
+                put_mid = (float(nearest_put.get("bid", 0)) + float(nearest_put.get("ask", 0))) / 2
+                put_price = put_mid if put_mid > 0.01 else float(nearest_put.get("lastPrice", 0))
+                if put_price > 0.01 and tte > 0.001:
+                    iv_approx = put_price / (price * 0.4 * (tte ** 0.5))
+                    if 0.01 < iv_approx < 5.0:
+                        iv_pct = iv_approx * 100
+                        if iv_min <= iv_pct <= iv_max:
+                            result["iv"] = round(iv_pct, 1)
+                            iv_found = True
+                        else:
+                            result["fail_reason"] = f"IV {iv_pct:.1f}% outside {iv_min}-{iv_max}% range"
+                            return result
+        except Exception:
+            pass
 
-def screen(ticker, lo, hi, iv_tgt, iv_lo, iv_hi, min_vol):
-    r={"ticker":ticker,"ok":False,"reason":"","name":"","sector":"","industry":"","price":None,"iv":None,"vol":0,"has_wk":False,"num_exp":0,"opt_vol":0,"margin":None,"cagr":None,"driver":"","log":[]}
-    def log(m): r["log"].append(m)
-    try:
-        s=yf.Ticker(ticker); info=s.info
-        if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-            r["reason"]="No price"; log("FAIL - no price"); return r
-        r["name"]=info.get("longName") or info.get("shortName") or ticker
-        r["sector"]=info.get("sector") or "N/A"; r["industry"]=info.get("industry") or "N/A"
-        log(f"{r['name']} ({ticker}) - {r['sector']}/{r['industry']}")
+        # Fallback to yfinance IV
+        if not iv_found:
+            for exp in exp_dates[:5]:
+                try:
+                    chain = stock.option_chain(exp)
+                    if not chain.calls.empty:
+                        chain.calls["dist"] = abs(chain.calls["strike"] - price)
+                        nc = chain.calls.loc[chain.calls["dist"].idxmin()]
+                        chain_iv = nc.get("impliedVolatility")
+                        if chain_iv and float(chain_iv) > 0.001:
+                            iv_pct = float(chain_iv) * 100
+                            if iv_min <= iv_pct <= iv_max:
+                                result["iv"] = round(iv_pct, 1)
+                                iv_found = True
+                                break
+                except Exception:
+                    pass
 
-        ok,re=passes_industry(info)
-        if not ok: r["reason"]=re; log(f"FAIL - {re}"); return r
+        if not iv_found:
+            result["fail_reason"] = "No IV data available"
+            return result
 
-        ok,re=passes_geo(info)
-        if not ok: r["reason"]=re; log(f"FAIL - {re}"); return r
+        # Margin check
+        fin = stock.financials
+        if fin is not None and not fin.empty:
+            year = fin.iloc[:, 0]
+            op_income = None
+            revenue = None
+            for k in ["Operating Income", "EBIT"]:
+                if k in year.index:
+                    op_income = float(year.loc[k])
+                    break
+            for k in ["Total Revenue", "Revenue"]:
+                if k in year.index:
+                    revenue = float(year.loc[k])
+                    break
+            if op_income is not None and revenue and revenue != 0:
+                margin_pct = (op_income / revenue) * 100
+                if margin_pct <= 0:
+                    result["fail_reason"] = f"Margin {margin_pct:.1f}% (non-positive)"
+                    return result
+                result["margin"] = round(margin_pct, 2)
+        else:
+            result["fail_reason"] = "No financial data available"
+            return result
 
-        ok,re,px=passes_price(info,lo,hi)
-        if not ok: r["reason"]=re; log(f"FAIL - {re}"); return r
-        r["price"]=px; log(f"PASS price ${px:.2f}")
+        # CAGR from revenue history
+        if fin.shape[1] >= 3:
+            revenues = []
+            for i in range(min(4, fin.shape[1])):
+                col = fin.iloc[:, i]
+                found = False
+                for k in ["Total Revenue", "Revenue"]:
+                    if k in col.index:
+                        revenues.append(float(col.loc[k]))
+                        found = True
+                        break
+                if not found:
+                    revenues.append(None)
+            revenues = [r for r in revenues if r]
+            if len(revenues) >= 3 and revenues[-1] > 0 and revenues[0] > 0:
+                n_periods = len(revenues) - 1
+                cagr = ((revenues[0] / revenues[-1]) ** (1.0 / n_periods) - 1) * 100
+                result["cagr"] = round(cagr, 2)
 
-        hw,ne,ov=check_options(ticker)
-        r["has_wk"]=hw; r["num_exp"]=ne; r["opt_vol"]=ov
-        if not hw: r["reason"]="No weekly options"; log(f"FAIL - no weekly chain ({ne} exp)"); return r
-        log(f"PASS - {ne} expirations, vol {ov:,}")
+        # Business description / driver
+        summary = info.get("longBusinessSummary") or ""
+        if summary:
+            sentences = [x.strip() for x in summary.replace("\n", " ").split(".")[:3] if x.strip()]
+            result["driver"] = ". ".join(sentences)[:250]
+        else:
+            result["driver"] = ticker
 
-        iv,ivs=get_iv(ticker)
-        if iv is None: r["reason"]="No IV data"; log("FAIL - no IV"); return r
-        r["iv"]=round(iv,1)
-        if iv<iv_lo or iv>iv_hi: r["reason"]=f"IV {iv:.1f}% outside {iv_lo:.0f}-{iv_hi:.0f}%"; log(f"FAIL - IV {iv:.1f}%"); return r
-        log(f"PASS - IV {iv:.1f}% (target ~{iv_tgt:.0f}%)")
+        result["qualified"] = True
+        return result
 
-        adv=int(info.get("averageVolume") or info.get("averageDailyVolume10Day") or 0)
-        r["vol"]=adv
-        if adv<min_vol: r["reason"]=f"Vol {adv:,}<{min_vol:,}"; log(f"FAIL - vol {adv:,}"); return r
-        log(f"PASS - vol {adv:,}")
-
-        om,oy=get_margins(ticker)
-        if om is None: r["reason"]="No margin data"; log("FAIL - no margin"); return r
-        r["margin"]=round(om,2)
-        if om<=0: r["reason"]=f"Margin {om:.1f}% negative"; log(f"FAIL - margin {om:.1f}%"); return r
-        log(f"PASS - margin {om:.1f}%")
-
-        cg,_=get_cagr(ticker); r["cagr"]=cg
-        r["driver"]=get_summary(info,ticker)
-        r["ok"]=True; log("✅ QUALIFIED ★")
-        return r
     except Exception as e:
-        r["reason"]=f"Error: {e}"; log(f"FAIL - {e}"); return r
+        result["fail_reason"] = f"Error: {str(e)[:100]}"
+        return result
 
-# ── UI ───────────────────────────────────────────────────────────────────
+def render_progress(ph, title, pct, detail, found=0):
+    pct = max(0, min(100, int(pct)))
+    ph.markdown(
+        f"<div class='loader'><div class='loader-icon'></div>"
+        f"<div class='loader-title'>{html.escape(title)}</div>"
+        f"<div class='loader-track'><div class='loader-fill' style='width:{pct}%'></div>"
+        f"<span class='loader-pct'>{pct}%</span></div>"
+        f"<div class='loader-detail'>{html.escape(detail)}</div>"
+        f"<div class='loader-found'><b>{found}</b> qualified so far</div></div>",
+        unsafe_allow_html=True,
+    )
+
+# ── TIER SCAN (V2 exact pipeline: industry filter → batch price → deep) ──
+def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
+              iv_min, iv_max, min_vol):
+    qualified = []
+    failed = []
+    progress_placeholder = st.empty()
+    render_progress(progress_placeholder, f"Screening {tier_name}", 0, "Loading tickers")
+
+    if not tickers:
+        progress_placeholder.empty()
+        return [], []
+
+    # 1. Industry/name pre-filter (V2 exact)
+    passed = tier_name_filter(tickers, sectors, name_map)
+    if not passed:
+        progress_placeholder.empty()
+        return [], []
+
+    # 2. Batch price filter (yf.download in groups of 300); occupies 0-20% of the bar
+    priced = []
+    for i in range(0, len(passed), 300):
+        batch = passed[i:i + 300]
+        render_progress(progress_placeholder, f"Screening {tier_name}",
+                        20 * i / len(passed), f"Filtering {len(passed)} tickers by price")
+        try:
+            data = yf.download(
+                ",".join(batch),
+                period="1d",
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+            )
+            if data.empty:
+                continue
+            if "Close" in data.columns.levels[0]:
+                closes = data["Close"].iloc[-1]
+            else:
+                closes = data.iloc[-1]
+            for t in batch:
+                if t in closes.index:
+                    px = float(closes[t])
+                    if pd.notna(px) and price_min <= px <= price_max:
+                        priced.append((t, px))
+        except Exception:
+            continue
+
+    if not priced:
+        progress_placeholder.empty()
+        return [], []
+
+    # 3. Deep screen in parallel (20-100% of the bar); results re-sorted to input order
+    total_priced = len(priced)
+    done = 0
+    results = {}
+    with ThreadPoolExecutor(max_workers=DEEP_SCREEN_WORKERS) as pool:
+        futures = {pool.submit(deep_screen, t, px, iv_min, iv_max, min_vol): i
+                   for i, (t, px) in enumerate(priced)}
+        for fut in as_completed(futures):
+            result = fut.result()
+            result["tier"] = tier_name
+            results[futures[fut]] = result
+            done += 1
+            n_q = sum(1 for r in results.values() if r["qualified"])
+            render_progress(progress_placeholder, f"Screening {tier_name}",
+                            20 + 80 * done / total_priced,
+                            f"Deep screening {done} of {total_priced} candidates", n_q)
+    for i in sorted(results):
+        (qualified if results[i]["qualified"] else failed).append(results[i])
+
+    progress_placeholder.empty()
+    return qualified, failed
+
+# ═══════════════════════════════════════════════════════════════════════
+# STREAMLIT UI
+# ═══════════════════════════════════════════════════════════════════════
+
 st.markdown("""
 <style>
-    .main-title { font-size:1.8rem; font-weight:700 }
-    .subtitle { color:#888; margin-bottom:1.5rem }
-    .fc-badge { display:inline-block; background:#1a6b3c; color:#fff; padding:0.15rem 0.6rem; border-radius:12px; font-size:0.8rem; font-weight:600 }
-    div[data-testid="stStatusWidget"] { display:none !important }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html,body,[class*="css"],.stApp{font-family:'Inter',sans-serif}
+.stApp{background:#f6f5f3;color:#1f2328}
+.block-container{max-width:860px;padding-top:2rem}
+header[data-testid="stHeader"]{background:transparent}
+.main-title{font-size:1.9rem;font-weight:700;letter-spacing:-0.02em;color:#1f2328}
+.subtitle{color:#6b7280;margin:0.2rem 0 1.5rem;font-size:0.95rem}
+.section-label{color:#6b7280;font-weight:600;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em;margin:1.4rem 0 0.6rem}
+.chip-row{display:flex;flex-wrap:wrap;gap:0.5rem}
+.chip{background:#fff;border:1px solid #e6e3de;border-radius:999px;padding:0.35rem 0.85rem;font-size:0.82rem;color:#4b5563}
+.chip b{color:#1f2328;font-weight:600}
+.chip.ok{border-color:#bfe3cf;background:#e9f6ee}
+.chip.no{border-color:#f1c9c9;background:#fbeeee}
+.card{background:#fff;border:1px solid #e6e3de;border-radius:12px;padding:1.1rem 1.25rem;margin-bottom:0.9rem;box-shadow:0 1px 2px rgba(0,0,0,.04);transition:box-shadow .15s}
+.card:hover{box-shadow:0 4px 14px rgba(0,0,0,.08)}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}
+.card-name{font-size:1.05rem;font-weight:600;color:#1f2328}
+.card-sub{font-size:0.8rem;color:#6b7280;margin-top:0.15rem}
+.card-price{font-size:1.35rem;font-weight:700;color:#1f2328;text-align:right}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0.6rem;margin-top:0.9rem}
+.metric{background:#f6f5f3;border-radius:8px;padding:0.55rem 0.7rem}
+.metric span{display:block;font-size:0.68rem;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em}
+.metric b{font-size:0.98rem;color:#1f2328;font-weight:600}
+.pos{color:#1f9d63!important}.neg{color:#d64545!important}
+.tier-tag{display:inline-block;padding:0.1rem 0.55rem;border-radius:999px;font-size:0.68rem;font-weight:600;color:#fff;margin-left:0.5rem;vertical-align:middle}
+.driver{margin-top:0.8rem;font-size:0.82rem;color:#6b7280;line-height:1.5}
+.stButton>button{border-radius:8px;border:1px solid #e6e3de;background:#fff;color:#1f2328;font-weight:500}
+.stButton>button:hover{border-color:#ff6b3d;color:#ff6b3d}
+.stButton>button[kind="primary"]{background:#ff6b3d;border-color:#ff6b3d;color:#fff;font-weight:600}
+.stButton>button[kind="primary"]:hover{background:#e85a2d;color:#fff}
+div[data-testid="stStatusWidget"]{display:none!important}
+@media(max-width:640px){.metrics{grid-template-columns:repeat(2,1fr)}}
+section[data-testid="stSidebar"]{background:#fff;border-right:1px solid #e6e3de}
+section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
+.side-brand{font-weight:700;font-size:1.1rem;color:#1f2328;margin-bottom:0.5rem}
+.side-brand i{display:inline-block;width:10px;height:10px;border-radius:3px;background:#ff6b3d;margin-right:8px}
+.loader{background:#fff;border:1px solid #e6e3de;border-radius:16px;padding:2rem 1.5rem;margin:0.8rem 0;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.loader-icon{width:36px;height:36px;margin:0 auto 0.9rem;border-radius:50%;border:3px solid #ffe3d9;border-top-color:#ff6b3d;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loader-title{font-size:1.05rem;font-weight:600;color:#1f2328;margin-bottom:1rem}
+.loader-track{position:relative;height:18px;max-width:520px;margin:0 auto;background:#ffe9e1;border-radius:999px;overflow:hidden}
+.loader-fill{height:100%;background:#ff6b3d;border-radius:999px;transition:width .3s ease}
+.loader-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.68rem;font-weight:600;color:#1f2328}
+.loader-detail{margin-top:0.9rem;font-size:0.82rem;color:#6b7280}
+.loader-found{margin-top:0.2rem;font-size:0.8rem;color:#6b7280}
+.loader-found b{color:#1f9d63}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">★ FRANCINE SCREENER v2</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Master Options & Fundamentals Screener — Institutional Quantitative Analysis</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Francine Screener</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Options-liquid stocks across four market tiers, no industry exclusions.</div>', unsafe_allow_html=True)
 
-st.markdown("### Universe")
-universe = st.radio(
-    "Choose:",
-    ["S&P 500", "S&P 400", "S&P 600", "Rest of Market", "All Tiers Progressive"],
-    format_func=lambda value: {
-        "S&P 500": "S&P 500 — Large Cap (~503 stocks)",
-        "S&P 400": "S&P 400 — Mid Cap (~400 stocks)",
-        "S&P 600": "S&P 600 — Small Cap (~603 stocks)",
-        "Rest of Market": "Rest of Market — Other US-listed stocks",
-        "All Tiers Progressive": "All Tiers Progressive (1>2>3>4)",
-    }[value],
-)
+# Criteria display
+st.markdown('<div class="section-label">Screening criteria</div>', unsafe_allow_html=True)
+st.markdown("""
+<div class="chip-row">
+<span class="chip ok"><b>All industries</b></span>
+<span class="chip no"><b>Blocked:</b> China, Russia, Latin America</span>
+<span class="chip"><b>Weekly options</b> with volume</span>
+<span class="chip"><b>IV</b> target ±10</span>
+<span class="chip"><b>Volume</b> ≥ 2M</span>
+<span class="chip"><b>Margin</b> &gt; 0%</span>
+</div>
+""", unsafe_allow_html=True)
 
-st.markdown("### Parameters")
-c1,c2=st.columns(2)
-with c1: lo=st.number_input("From ($)",1.0,5000.0,10.0,1.0)
-with c2: hi=st.number_input("To ($)",1.0,5000.0,50.0,1.0)
+# Tier selection
+tier_keys = list(TIERS.keys())
+if "_tier_init" not in st.session_state:
+    for k in tier_keys:
+        st.session_state[f"tc_{k}"] = (k == "S&P 500")
+    st.session_state._tier_init = True
 
-st.markdown("---")
-st.markdown("### Phase 2: Core Filtering Parameters")
-c1,c2,c3=st.columns(3)
-with c1: iv_tgt=st.number_input("IV Target (%)",5.0,100.0,32.0,1.0)
-with c2: iv_lo=st.number_input("IV Min (%)",5.0,100.0,28.0,1.0)
-with c3: iv_hi=st.number_input("IV Max (%)",5.0,150.0,48.0,1.0)
-min_vol=st.number_input("Min Avg Daily Volume (shares)",100000,100000000,2000000,100000,format="%d")
+# Preset handler
+preset = st.session_state.get("_preset", None)
+if preset:
+    for k in tier_keys:
+        if preset == "t1":
+            v = (k == "S&P 500")
+        elif preset == "t13":
+            v = (k in ("S&P 500", "S&P 400", "S&P 600"))
+        elif preset == "all":
+            v = True
+        elif preset == "none":
+            v = False
+        st.session_state[f"tc_{k}"] = v
+        st.session_state[f"cb_{k}"] = v  # sync widget key so checkbox renders correctly
+    del st.session_state._preset
+    st.rerun()
 
-tab1,tab2=st.tabs(["🔍 Run Screen","📖 Info"])
+with st.sidebar:
+    st.markdown('<div class="side-brand"><i></i>Francine</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Tier selection</div>', unsafe_allow_html=True)
+    pc = st.columns(2)
+    if pc[0].button("Tier 1", use_container_width=True):
+        st.session_state._preset = "t1"; st.rerun()
+    if pc[1].button("Tiers 1-3", use_container_width=True):
+        st.session_state._preset = "t13"; st.rerun()
+    if pc[0].button("All 4", use_container_width=True):
+        st.session_state._preset = "all"; st.rerun()
+    if pc[1].button("Clear", use_container_width=True):
+        st.session_state._preset = "none"; st.rerun()
 
-with tab1:
-    if st.button("🚀 RUN FRANCINE SCREEN v2",type="primary",use_container_width=True):
-        if lo<=0 or hi<=0: st.error("Enter valid price range.")
-        elif lo>=hi: st.error("To: must be greater than From:.")
-        elif iv_lo>=iv_hi: st.error("IV Min must be less than IV Max.")
-        else:
-            with st.spinner(f"Loading {universe}..."): tickers=get_universe_tickers(universe)
-            if not tickers: st.stop()
-            st.info(f"Scanning {len(tickers):,} stocks — ${lo:.0f}-${hi:.0f}, IV {iv_lo:.0f}-{iv_hi:.0f}%, vol ≥{min_vol:,}")
-            pb=st.progress(0,text="Starting..."); stx=st.empty()
-            ok=[]; out=[]
-            for i,t in enumerate(tickers):
-                pb.progress(min((i+1)/len(tickers),1.0))
-                stx.text(f"[{i+1}/{len(tickers)}] {t} — {len(ok)} qualified, {len(out)} excluded")
-                r=screen(t,lo,hi,iv_tgt,iv_lo,iv_hi,min_vol)
-                if r["ok"]: ok.append(r)
-                else: out.append(r)
-                if i%4==0: time.sleep(0.05)
-            pb.progress(1.0); stx.text(f"Done — {len(ok)} qualified, {len(out)} excluded of {len(tickers):,}")
-            st.markdown("---")
+    for k in tier_keys:
+        ck = f"tc_{k}"
+        if ck not in st.session_state:
+            st.session_state[ck] = (k == "S&P 500")
+        st.checkbox(f"{TIERS[k]['label']} — {TIERS[k]['desc']}",
+                    value=st.session_state[ck], key=f"cb_{k}")
+        st.session_state[ck] = st.session_state[f"cb_{k}"]
 
-            if not ok:
-                st.warning("No companies pass all filters. Try widening the range.")
+    st.markdown('<div class="section-label">Parameters</div>', unsafe_allow_html=True)
+    pr = st.columns(2)
+    price_min = pr[0].number_input("From $", min_value=0.0, value=10.0, step=5.0)
+    price_max = pr[1].number_input("To $", min_value=0.0, value=50.0, step=5.0)
+    iv_target = st.number_input("IV target %", min_value=0.0, value=35.0, step=5.0)
+    min_vol = st.number_input("Min volume", min_value=0, value=2000000, step=500000)
+
+    iv_min = max(0, iv_target - 10)
+    iv_max = iv_target + 10
+    st.caption(f"IV range: {iv_min:.0f}–{iv_max:.0f}%")
+
+    run = st.button("Run screen", type="primary", use_container_width=True)
+
+selected = [k for k in tier_keys if st.session_state.get(f"tc_{k}", False)]
+
+# ── SCREENING ──────────────────────────────────────────────────────────
+if run:
+    if price_min <= 0 or price_max <= 0:
+        st.error("Enter valid price range.")
+    elif price_min >= price_max:
+        st.error("'To:' must be greater than 'From:'.")
+    elif not selected:
+        st.error("Select at least one tier.")
+    else:
+        all_qualified = []
+        all_failed = []
+
+        for tier_name in selected:
+            st.markdown(f"### 🔍 {TIERS[tier_name]['label']}")
+
+            sectors = {}
+            name_map = {}
+
+            if tier_name == "Rest":
+                prev = []
+                for k in ["S&P 500", "S&P 400", "S&P 600"]:
+                    if k in selected[:selected.index(tier_name)]:
+                        tk, _ = load_index(k)
+                        prev.extend(tk)
+                tickers = get_rest_tickers(set(prev))
+                if not tickers:
+                    st.info("No stocks loaded for Rest of Market.")
+                    continue
+                st.caption(f"Loaded {len(tickers)} tickers from NASDAQ/NYSE")
             else:
-                st.markdown(f"### ✅ QUALIFIED — Francine Core ★")
-                td=[]
-                for q in ok:
-                    td.append({"Ticker":q["ticker"],"Company":q["name"],"Price":f"${q['price']:.2f}","30D IV":f"{q['iv']:.1f}%" if q['iv'] else "N/A","Avg Vol":f"{q['vol']:,}","3Y CAGR":f"{q['cagr']:.1f}%" if q['cagr'] is not None else "N/A","Catalyst":(q['driver'][:120]+"...") if len(q.get('driver',''))>120 else (q['driver'] or "N/A")})
-                st.dataframe(pd.DataFrame(td),hide_index=True,use_container_width=True)
+                tickers, sectors = load_index(tier_name)
+                if not tickers:
+                    st.warning(f"Could not load {tier_name}.")
+                    continue
+                st.caption(f"Loaded {len(tickers)} tickers from Wikipedia")
 
-                st.markdown("---")
-                st.markdown("### 🏆 Top Picks for Income Strategies")
-                top=sorted(ok,key=lambda q:((q.get('cagr') or 0),(q.get('margin') or 0)),reverse=True)[:3]
-                for i,q in enumerate(top,1):
-                    c=f"{q['cagr']:.1f}% CAGR" if q.get('cagr') else "N/A"
-                    st.markdown(f"{i}. **{q['ticker']}** — {q['name']} — ${q['price']:.2f}, IV {q['iv']:.1f}%, {c}, margin {q['margin']:.1f}%")
+            q, f = scan_tier(tier_name, tickers, sectors, name_map,
+                             price_min, price_max, iv_min, iv_max, min_vol)
+            all_qualified.extend(q)
+            all_failed.extend(f)
 
-                st.markdown("---")
-                st.markdown("### 🔍 Screened-Out Summary")
-                rc={}
-                for s in out:
-                    cat=(s["reason"][:80] if s["reason"] else "Unknown").split("(")[0].strip().rstrip("— ")
-                    rc[cat]=rc.get(cat,0)+1
-                for rea,cnt in sorted(rc.items(),key=lambda x:-x[1]):
-                    st.markdown(f"- **{rea}** → {cnt} companies")
-                st.markdown(f"_{len(out):,} of {len(tickers):,} excluded._")
+        # ── RESULTS ────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("## Results: " + str(len(all_qualified)) + " qualified")
 
-with tab2:
-    st.markdown("""
-    **What it does:** Screens selected US-market tiers using Francine's v2 methodology.
+        if all_qualified:
+            for idx, q in enumerate(all_qualified, 1):
+                tn = q.get("tier", "")
+                tc = TIERS.get(tn, {}).get("color", "#555")
+                cagr = q.get("cagr")
+                cagr_html = (f"<b class='{'pos' if cagr >= 0 else 'neg'}'>{cagr:+.1f}%</b>"
+                             if cagr is not None else "<b>—</b>")
+                name = html.escape(q.get("company_name", ""))
+                st.markdown(
+                    f"<div class='card'><div class='card-head'><div>"
+                    f"<div class='card-name'>{name} · {html.escape(q['ticker'])}"
+                    f"<span class='tier-tag' style='background:{tc}'>{html.escape(tn)}</span></div>"
+                    f"<div class='card-sub'>{html.escape(q.get('sector','N/A'))} / {html.escape(q.get('industry','N/A'))}</div></div>"
+                    f"<div class='card-price'>${q['price']:.2f}</div></div>"
+                    f"<div class='metrics'>"
+                    f"<div class='metric'><span>IV</span><b>{q['iv']:.1f}%</b></div>"
+                    f"<div class='metric'><span>Avg volume</span><b>{(q.get('avg_volume') or 0):,}</b></div>"
+                    f"<div class='metric'><span>Margin</span><b>{(q.get('margin') or 0):.1f}%</b></div>"
+                    f"<div class='metric'><span>Rev CAGR</span>{cagr_html}</div></div>"
+                    f"<div class='driver'>{html.escape(q.get('driver',''))}</div></div>",
+                    unsafe_allow_html=True,
+                )
 
-    **Universes:** S&P 500 large caps, S&P 400 mid caps, S&P 600 small caps,
-    the remaining Nasdaq-listed market, or all four tiers progressively.
+            # ── CSV download ──
+            csv_lines = []
+            csv_lines.append("ticker,company_name,price,iv,avg_volume,margin,cagr,sector,industry,tier,options_liquid,driver")
+            for q in all_qualified:
+                row = (
+                    q.get("ticker",""),
+                    q.get("company_name","").replace(","," "),
+                    q.get("price",0),
+                    q.get("iv",0),
+                    q.get("avg_volume") or 0,
+                    q.get("margin") or 0,
+                    q.get("cagr") or 0,
+                    q.get("sector","").replace(","," "),
+                    q.get("industry","").replace(","," "),
+                    q.get("tier",""),
+                    "Yes" if q.get("options_liquid") else "No",
+                    q.get("driver","").replace(","," "),
+                )
+                csv_lines.append(",".join(str(v) for v in row))
+            csv_data = "\n".join(csv_lines)
 
-    **Filters (all must pass):**
-    1. Industry exclusion — no banks, insurance, pharma, etc.
-    2. Geographic — developed markets only
-    3. Price range — user defined
-    4. Weekly options — Cboe Weeklys verified
-    5. IV — within target window (default 28-48%)
-    6. Volume — avg daily ≥ 2M shares
-    7. Operating margins — positive (latest year)
-    8. Revenue CAGR — calculated (informational)
+            st.download_button(
+                "📥 Download Results as CSV",
+                data=csv_data,
+                file_name="francine_screener_v3_results.csv",
+                mime="text/csv",
+            )
+        else:
+            st.warning("No qualified companies found.")
 
-    **Data source:** Yahoo Finance (yfinance) — live market data.
-    """[:500])
+        if all_failed:
+            with st.expander(f"📊 Failure Summary ({len(all_failed)} total)"):
+                reasons = Counter()
+                for r in all_failed[:200]:
+                    reasons[r.get("fail_reason", "Unknown")[:50]] += 1
+                for reason, count in reasons.most_common(10):
+                    st.markdown(f"- **{reason}**: {count}")
