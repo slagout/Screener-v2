@@ -34,7 +34,13 @@ DEFAULT_PRICE_MAX = 50.0
 DEFAULT_IV_MIN = 28.0
 DEFAULT_IV_MAX = 48.0
 DEFAULT_MIN_VOLUME = 2_000_000
-DEEP_SCREEN_WORKERS = 4
+DEEP_SCREEN_WORKERS = 2
+SCREEN_CACHE_TTL = 3600
+
+
+@st.cache_resource
+def _screen_cache():
+    return {}
 
 # ── Tier definitions ──────────────────────────────────────────────────
 TIERS = {
@@ -400,8 +406,21 @@ def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
     total_priced = len(priced)
     done = 0
     results = {}
+    cache = _screen_cache()
+
+    def screen_cached(t, px):
+        key = (t, round(px, 2), iv_min, iv_max, min_vol)
+        hit = cache.get(key)
+        if hit and time.time() - hit[0] < SCREEN_CACHE_TTL:
+            return dict(hit[1])
+        r = deep_screen(t, px, iv_min, iv_max, min_vol)
+        # Don't cache Yahoo throttling/errors, so they are retried next run
+        if r["qualified"] or not any(s in r["fail_reason"] for s in ("Yahoo", "Error:", "No data")):
+            cache[key] = (time.time(), dict(r))
+        return r
+
     with ThreadPoolExecutor(max_workers=DEEP_SCREEN_WORKERS) as pool:
-        futures = {pool.submit(deep_screen, t, px, iv_min, iv_max, min_vol): i
+        futures = {pool.submit(screen_cached, t, px): i
                    for i, (t, px) in enumerate(priced)}
         for fut in as_completed(futures):
             result = fut.result()
