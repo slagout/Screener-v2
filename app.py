@@ -574,8 +574,37 @@ if run:
             all_failed.extend(f)
 
         loader_ph.empty()
+        st.session_state.results = (all_qualified, all_failed)
 
-        # ── RESULTS ────────────────────────────────────────────────────
+
+def build_pdf(rows):
+    from fpdf import FPDF
+
+    def clean(s):
+        return str(s).encode("latin-1", "replace").decode("latin-1")
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, f"Francine Screener Results ({len(rows)} qualified)",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", size=9)
+    for q in rows:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 6, clean(f"{q.get('ticker','')} - {q.get('company_name','')}  ${q.get('price',0):.2f}"),
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", size=9)
+        cagr = q.get("cagr")
+        pdf.multi_cell(0, 5, clean(
+            f"Tier: {q.get('tier','')} | {q.get('sector','N/A')} / {q.get('industry','N/A')}\n"
+            f"IV: {q.get('iv',0):.1f}% | Avg volume: {(q.get('avg_volume') or 0):,} | "
+            f"Margin: {(q.get('margin') or 0):.1f}% | Rev CAGR: {'n/a' if cagr is None else f'{cagr:+.1f}%'}\n"
+            f"{q.get('driver','')}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+    return bytes(pdf.output())
+
+
+def render_results(all_qualified, all_failed):
         st.markdown("---")
         st.markdown("## Results: " + str(len(all_qualified)) + " qualified")
 
@@ -623,12 +652,23 @@ if run:
                 csv_lines.append(",".join(str(v) for v in row))
             csv_data = "\n".join(csv_lines)
 
-            st.download_button(
-                "📥 Download Results as CSV",
-                data=csv_data,
-                file_name="francine_screener_v3_results.csv",
-                mime="text/csv",
-            )
+            with st.popover("📥 Download Results"):
+                st.download_button(
+                    "CSV",
+                    data=csv_data,
+                    file_name="francine_screener_v3_results.csv",
+                    mime="text/csv",
+                    key="dl_csv",
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "PDF",
+                    data=build_pdf(all_qualified),
+                    file_name="francine_screener_v3_results.pdf",
+                    mime="application/pdf",
+                    key="dl_pdf",
+                    use_container_width=True,
+                )
         else:
             st.warning("No qualified companies found.")
 
@@ -639,3 +679,7 @@ if run:
                     reasons[r.get("fail_reason", "Unknown")[:50]] += 1
                 for reason, count in reasons.most_common(10):
                     st.markdown(f"- **{reason}**: {count}")
+
+
+if "results" in st.session_state:
+    render_results(*st.session_state.results)
