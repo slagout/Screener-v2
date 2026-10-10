@@ -332,7 +332,8 @@ with st.sidebar:
     if not has_key:
         st.error("FMP API key missing.")
         st.markdown(f"Get a free key at [financialmodelingprep.com]({fmp.SIGNUP_URL}), then set "
-                    "`FMP_API_KEY` in a `.env` file (see `.env.example`) and restart the app.")
+                    "`FMP_API_KEY` in a `.env` file (see `.env.example`) and restart the app. "
+                    "On Streamlit Cloud, add it under the app's Settings > Secrets.")
     else:
         u = fmp.usage()
         st.caption(f"FMP requests today: {u['count']} / {u['limit']}")

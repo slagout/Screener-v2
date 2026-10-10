@@ -64,6 +64,13 @@ _session = {"requests": 0, "cache_hits": 0}
 
 def api_key() -> str | None:
     key = os.getenv("FMP_API_KEY", "").strip()
+    if not key:
+        # Streamlit Cloud keeps secrets in st.secrets (not GitHub secrets).
+        try:
+            import streamlit as st
+            key = str(st.secrets.get("FMP_API_KEY", "")).strip()
+        except Exception:
+            key = ""
     return key or None
 
 
