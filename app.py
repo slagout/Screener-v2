@@ -1,9 +1,8 @@
 """
 FRANCINE SCREENER V3
 ====================
-S&P 500 screener. Fundamentals, prices and company data come from Financial
-Modeling Prep (data_sources/fmp.py); weekly options and IV come from yfinance
-(data_sources/options.py) because FMP has no options data.
+S&P 500 screener. Prices, profile and fundamentals come from Yahoo Finance
+(data_sources/yahoo.py); weekly options and IV from data_sources/options.py.
 
 Filters (README "What it checks"): industry exclusions, country allowlist, price
 range, >=25% below 52-week high, IV floor, Altman-Z > 3.0, weekly options required.
@@ -20,7 +19,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from data_sources import constituents, fmp, options
+from data_sources import constituents, options, yahoo
 
 st.set_page_config(page_title="Francine Screener V3", page_icon="📊", layout="wide",
                    initial_sidebar_state="expanded")
@@ -36,23 +35,27 @@ BLOCKED_INDUSTRIES = [
     "asset management", "capital markets",
 ]
 
-# README: US, Canada, Europe, UK, Australia/NZ, Japan, South Korea (ISO-3166 alpha-2,
-# as returned by FMP's profile "country" field).
+# README: US, Canada, Europe, UK, Australia/NZ, Japan, South Korea. Yahoo returns full
+# country names; compared case-insensitively.
 ALLOWED_COUNTRIES_BY_REGION = {
-    "United States": {"US"},
-    "Canada": {"CA"},
-    "United Kingdom": {"GB"},
+    "United States": {"united states"},
+    "Canada": {"canada"},
+    "United Kingdom": {"united kingdom"},
     "Europe": {
-        "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU",
-        "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-        "CH", "NO", "IS", "LI",
+        "austria", "belgium", "bulgaria", "croatia", "cyprus", "czech republic", "czechia",
+        "denmark", "estonia", "finland", "france", "germany", "greece", "hungary", "ireland",
+        "italy", "latvia", "lithuania", "luxembourg", "malta", "netherlands", "poland",
+        "portugal", "romania", "slovakia", "slovenia", "spain", "sweden",
+        "switzerland", "norway", "iceland", "liechtenstein",
     },
-    "Australia/NZ": {"AU", "NZ"},
-    "Japan": {"JP"},
-    "South Korea": {"KR"},
+    "Australia/NZ": {"australia", "new zealand"},
+    "Japan": {"japan"},
+    "South Korea": {"south korea"},
 }
 ALLOWED_COUNTRIES = set().union(*ALLOWED_COUNTRIES_BY_REGION.values())
-_COUNTRY_ALIASES = {"UK": "GB"}
+_COUNTRY_ALIASES = {"us": "united states", "usa": "united states", "uk": "united kingdom",
+                    "great britain": "united kingdom", "korea": "south korea",
+                    "republic of korea": "south korea"}
 
 MIN_BELOW_52W_HIGH_PCT = 25.0
 MIN_ALTMAN_Z = 3.0
@@ -70,8 +73,8 @@ def blocked_industry(*texts):
     return None
 
 
-def country_allowed(code):
-    c = (code or "").strip().upper()
+def country_allowed(country):
+    c = (country or "").strip().lower()
     return _COUNTRY_ALIASES.get(c, c) in ALLOWED_COUNTRIES
 
 
@@ -98,7 +101,7 @@ def _ts(epoch):
 
 
 def screen_ticker(sym, name, gics_text, price_min, price_max, min_iv, stop):
-    """Cheapest check first so scarce FMP calls are only spent on survivors."""
+    """Cheapest check first so Yahoo calls are only spent on survivors."""
     r = {"ticker": sym, "company_name": name, "qualified": False, "fail_reason": "",
          "fail_group": "", "stage": 0, "sector": "", "industry": "", "hq": ""}
 
@@ -107,10 +110,10 @@ def screen_ticker(sym, name, gics_text, price_min, price_max, min_iv, stop):
         return r
 
     if stop.is_set():
-        return fail("Skipped (FMP unavailable)", "Skipped: FMP budget/auth problem earlier in this run")
+        return fail("Skipped (Yahoo unavailable)", "Skipped: Yahoo rate limit earlier in this run")
     try:
         # 1. Quote: price range + 52-week high
-        q = fmp.get_quote(sym)
+        q = yahoo.get_quote(sym)
         price, year_high = q.get("price"), q.get("yearHigh")
         if not price or not year_high:
             return fail("UNKNOWN (data missing)", "UNKNOWN: quote has no price/52-week high")
@@ -124,7 +127,7 @@ def screen_ticker(sym, name, gics_text, price_min, price_max, min_iv, stop):
         r["stage"] = 1
 
         # 2. Profile: industry exclusions + geography allowlist
-        p = fmp.get_profile(sym)
+        p = yahoo.get_profile(sym)
         r.update(company_name=p.get("companyName") or name, sector=p.get("sector") or "N/A",
                  industry=p.get("industry") or "N/A", country=p.get("country") or "",
                  hq=", ".join(x for x in (p.get("city"), p.get("country")) if x),
@@ -152,7 +155,7 @@ def screen_ticker(sym, name, gics_text, price_min, price_max, min_iv, stop):
         r["stage"] = 3
 
         # 4. Financials: Altman-Z, LT debt / FCF
-        inc, bal, cf = fmp.get_income(sym), fmp.get_balance(sym), fmp.get_cashflow(sym)
+        inc, bal, cf = yahoo.get_income(sym), yahoo.get_balance(sym), yahoo.get_cashflow(sym)
         z = altman_z(inc, bal, q.get("marketCap"))
         if z is None:
             return fail("UNKNOWN (data missing)", "UNKNOWN: statements missing fields for Altman-Z")
@@ -165,13 +168,11 @@ def screen_ticker(sym, name, gics_text, price_min, price_max, min_iv, stop):
         r["stage"] = 4
         r["qualified"] = True
         return r
-    except fmp.FMPPlanRestricted:
-        return fail("Not covered by FMP plan", "Not covered by your FMP plan (free tier covers ~87 symbols)")
-    except (fmp.FMPBudgetExhausted, fmp.FMPRateLimited, fmp.FMPAuthError) as exc:
+    except yahoo.YahooRateLimited as exc:
         stop.set()
-        return fail("Skipped (FMP unavailable)", f"Stopped: {exc}")
-    except fmp.FMPDataError as exc:
-        return fail("UNKNOWN (data fetch)", f"UNKNOWN: FMP fetch failed ({exc})")
+        return fail("Skipped (Yahoo unavailable)", f"Stopped: {exc}")
+    except yahoo.YahooError as exc:
+        return fail("UNKNOWN (data fetch)", f"UNKNOWN: Yahoo fetch failed ({exc})")
     except Exception as exc:
         return fail("UNKNOWN (data fetch)", f"UNKNOWN: {type(exc).__name__}")
 
@@ -318,7 +319,6 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 universe = constituents.load_sp500()
-has_key = fmp.api_key() is not None
 
 with st.sidebar:
     st.markdown('<div class="side-brand"><i></i>Francine</div>', unsafe_allow_html=True)
@@ -328,17 +328,7 @@ with st.sidebar:
                    f"{universe.last_updated:%Y-%m-%d %H:%M} UTC ({universe.source})")
     if universe.warning:
         st.warning(universe.warning)
-
-    if not has_key:
-        st.error("FMP API key missing.")
-        st.markdown(f"Get a free key at [financialmodelingprep.com]({fmp.SIGNUP_URL}), then set "
-                    "`FMP_API_KEY` in a `.env` file (see `.env.example`) and restart the app. "
-                    "On Streamlit Cloud, add it under the app's Settings > Secrets.")
-    else:
-        u = fmp.usage()
-        st.caption(f"FMP requests today: {u['count']} / {u['limit']}")
-    st.caption("Free FMP keys cover only ~87 symbols; a full scan accumulates in the cache over several days.")
-
+    st.caption("Data: Yahoo Finance (free, unofficial). Results are cached; Yahoo may rate-limit big scans.")
     st.markdown('<div class="section-label">Parameters</div>', unsafe_allow_html=True)
     pr = st.columns(2)
     price_min = pr[0].number_input("From $", min_value=0.0, value=10.0, step=5.0)
@@ -346,7 +336,7 @@ with st.sidebar:
     min_iv = st.number_input("Min IV %", min_value=0.0, value=DEFAULT_MIN_IV, step=5.0)
 
     run = st.button("Run screen", type="primary", use_container_width=True,
-                    disabled=not (has_key and universe.tickers))
+                    disabled=not universe.tickers)
 
 # ── SCREENING ──────────────────────────────────────────────────────────
 if run:
@@ -355,7 +345,6 @@ if run:
     elif price_min >= price_max:
         st.error("'To:' must be greater than 'From:'.")
     else:
-        used_before = fmp.usage()["count"]
         loader_ph = st.empty()
         all_qualified, all_failed = run_screen(universe.tickers, universe.names, universe.sectors,
                                                price_min, price_max, min_iv, loader_ph)
@@ -383,7 +372,7 @@ if run:
                     f"<div class='driver'>52-week high ${q['year_high']:.2f} · weekly expiry {html.escape(str(q['weekly_exp']))}"
                     f" · LT debt {fmt_money(q.get('lt_debt'))} · FCF {fmt_money(q.get('fcf'))}"
                     f" (FY {html.escape(str(q.get('fin_date') or 'n/a'))})<br>"
-                    f"Sources: price/profile/financials FMP (quote {_ts(q.get('quote_at'))}, financials {_ts(q.get('fin_at'))});"
+                    f"Sources: price/profile/financials Yahoo Finance (quote {_ts(q.get('quote_at'))}, financials {_ts(q.get('fin_at'))});"
                     f" options/IV Yahoo Finance via yfinance ({_ts(q.get('options_at'))}).</div></div>",
                     unsafe_allow_html=True,
                 )
@@ -411,6 +400,5 @@ if run:
                     [{"Ticker": r["ticker"], "Company": r.get("company_name", ""), "Reason": r.get("fail_reason", "")}
                      for r in all_failed]), use_container_width=True, hide_index=True)
 
-        u = fmp.usage()
-        st.caption(f"FMP requests this run: {u['count'] - used_before} · today: {u['count']} / {u['limit']} · "
-                   f"cache hits: {fmp.session_stats()['cache_hits']}")
+        s = yahoo.stats()
+        st.caption(f"Yahoo fetches this session: {s['fetches']} · cache hits: {s['cache_hits']}")

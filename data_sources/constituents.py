@@ -1,8 +1,7 @@
 """S&P 500 constituents from a maintained open dataset, with a validated local CSV cache.
 
-FMP's own constituents endpoint (/stable/sp500-constituent) is Premium-only, so the
-free path uses the open dataset below. The list is refreshed at most once a day and
-cached to sp500.csv, which is also the fallback when the remote fetch or validation fails.
+The list is refreshed at most once a day and cached to sp500.csv, which is also the
+fallback when the remote fetch or validation fails.
 """
 from __future__ import annotations
 
@@ -64,7 +63,7 @@ def _read_cache() -> pd.DataFrame | None:
 
 
 def _to_universe(df: pd.DataFrame, source: str, warning: str | None) -> Universe:
-    # yfinance/FMP use "BRK-B", the dataset uses "BRK.B".
+    # yfinance uses "BRK-B", the dataset uses "BRK.B".
     syms = df["symbol"].str.replace(".", "-", regex=False)
     return Universe(
         tickers=syms.tolist(),

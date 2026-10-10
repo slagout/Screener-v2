@@ -1,6 +1,5 @@
 """Options data (weekly detection + implied volatility) via yfinance.
 
-FMP has no options endpoints, so this is the only module that touches yfinance.
 Any fetch failure returns status "unknown" so the caller skips the ticker.
 """
 from __future__ import annotations
