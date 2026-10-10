@@ -34,7 +34,7 @@ DEFAULT_PRICE_MAX = 50.0
 DEFAULT_IV_MIN = 28.0
 DEFAULT_IV_MAX = 48.0
 DEFAULT_MIN_VOLUME = 2_000_000
-DEEP_SCREEN_WORKERS = 8
+DEEP_SCREEN_WORKERS = 4
 
 # ── Tier definitions ──────────────────────────────────────────────────
 TIERS = {
@@ -165,9 +165,19 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
             return result
 
         # Options liquidity check (need 2+ weeklies with volume)
-        exp_dates = stock.options
+        exp_dates = ()
+        opt_err = ""
+        for attempt in range(3):
+            try:
+                exp_dates = stock.options
+                if exp_dates:
+                    break
+                opt_err = " (Yahoo Finance returned no expirations, likely throttled)"
+            except Exception as e:
+                opt_err = f" (Yahoo Finance error: {type(e).__name__}: {str(e)[:120]})"
+            time.sleep(1.5 * (attempt + 1))
         if not exp_dates or len(exp_dates) < 2:
-            result["fail_reason"] = "No weekly options chain"
+            result["fail_reason"] = f"No weekly options chain{opt_err}"
             return result
 
         weeks_with_volume = 0
