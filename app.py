@@ -22,6 +22,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Stock Screener", page_icon=os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "assets", "favicon.png"), layout="wide", initial_sidebar_state="expanded")
 
+
+def _favicon_data_uri():
+    import base64
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "assets", "favicon.png")
+    with open(path, "rb") as f:
+        return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+
 # ── ALL INDUSTRY/SECTOR/NAME EXCLUSIONS REMOVED per Tom's directive ──
 # V3 scans ALL industries: pharma, banks, insurance, tobacco, cannabis,
 # REITs, financial services no longer blocked.
@@ -560,8 +567,8 @@ div[data-testid="stStatusWidget"]{display:none!important}
 @media(max-width:640px){.metrics{grid-template-columns:repeat(2,1fr)}}
 section[data-testid="stSidebar"]{background:#fff;border-right:1px solid #e6e3de}
 section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
-.side-brand{font-weight:700;font-size:1.1rem;color:#1f2328;margin-bottom:0.5rem}
-.side-brand i{display:inline-block;width:10px;height:10px;border-radius:3px;background:#ff6b3d;margin-right:8px}
+.side-brand{font-weight:700;font-size:1.1rem;color:#1f2328;margin-bottom:0.5rem;display:flex;align-items:center;gap:8px}
+.side-brand img{width:22px;height:22px;border-radius:5px;image-rendering:pixelated}
 .loader{padding:3rem 0.5rem 1.5rem;margin:0.8rem 0;text-align:center}
 .loader-badge{width:46px;height:46px;margin:0 auto 1rem;border-radius:50%;background:#fff0ea;display:flex;align-items:center;justify-content:center;animation:pulse 1.6s ease-in-out infinite}
 @keyframes pulse{50%{transform:scale(1.1)}}
@@ -608,7 +615,6 @@ section[data-testid="stSidebar"]{{background:{t['soft']}!important;border-right:
 .chip.ok{{background:{t['ok']}!important;border-color:{t['ok_b']}!important}}
 .chip.no{{background:{t['no']}!important;border-color:{t['no_b']}!important}}
 .chip{{color:{t['muted']}!important}}
-.side-brand i{{background:{t['text']}!important}}
 .loader-badge{{background:{t['soft']}!important}}
 .loader-badge svg{{stroke:{t['text']}!important}}
 div[data-baseweb="input"],div[data-baseweb="input"] input,div[data-baseweb="base-input"]{{background:{t['soft']}!important;color:{t['text']}!important}}
@@ -666,7 +672,7 @@ if preset:
     st.rerun()
 
 with st.sidebar:
-    st.markdown('<div class="side-brand"><i></i>Stock Screener</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="side-brand"><img src="{_favicon_data_uri()}" alt="">Stock Screener</div>', unsafe_allow_html=True)
     st.toggle("Dark mode", key="dark_mode")
     if hasattr(st, "dialog"):
         if st.button("How to use", use_container_width=True):
