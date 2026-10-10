@@ -13,12 +13,14 @@ import requests
 import io
 import time
 import re
+import html
 import os
 import sys
 from datetime import datetime, timedelta
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-st.set_page_config(page_title="Francine Screener V3", page_icon="📊", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Francine Screener V3", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 # ── ALL INDUSTRY/SECTOR/NAME EXCLUSIONS REMOVED per Tom's directive ──
 # V3 scans ALL industries: pharma, banks, insurance, tobacco, cannabis,
@@ -32,7 +34,7 @@ DEFAULT_PRICE_MAX = 50.0
 DEFAULT_IV_MIN = 28.0
 DEFAULT_IV_MAX = 48.0
 DEFAULT_MIN_VOLUME = 2_000_000
-DEEP_SCREEN_DELAY = 0.8
+DEEP_SCREEN_WORKERS = 8
 
 # ── Tier definitions ──────────────────────────────────────────────────
 TIERS = {
@@ -70,6 +72,10 @@ def load_index(name):
 def get_tickers(name): return load_index(name)[0]
 
 def get_rest_tickers(exclude):
+    return _rest_tickers(frozenset(exclude))
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _rest_tickers(exclude):
     tk = set(); h = {"User-Agent":"Mozilla/5.0"}
     for url,label in [("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt","NASDAQ"),
                       ("https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt","NYSE/AMEX")]:
@@ -139,6 +145,14 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
             result["fail_reason"] = "Geography excluded"
             return result
 
+        # Cheap volume check first to skip option-chain calls
+        avg_vol = int(info.get("averageVolume") or info.get("averageDailyVolume10Day") or 0)
+        result["avg_volume"] = avg_vol
+        result["volume"] = avg_vol
+        if avg_vol < min_vol:
+            result["fail_reason"] = f"Avg volume {avg_vol:,} < {min_vol:,}"
+            return result
+
         # Options liquidity check (need 2+ weeklies with volume)
         exp_dates = stock.options
         if not exp_dates or len(exp_dates) < 2:
@@ -151,6 +165,8 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
                 chain = stock.option_chain(exp)
                 if (chain.calls["volume"].sum() + chain.puts["volume"].sum()) > 0:
                     weeks_with_volume += 1
+                    if weeks_with_volume >= 2:
+                        break
             except Exception:
                 pass
         if weeks_with_volume < 2:
@@ -225,14 +241,6 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
             result["fail_reason"] = "No IV data available"
             return result
 
-        # Volume check
-        avg_vol = int(info.get("averageVolume") or info.get("averageDailyVolume10Day") or 0)
-        result["avg_volume"] = avg_vol
-        result["volume"] = avg_vol
-        if avg_vol < min_vol:
-            result["fail_reason"] = f"Avg volume {avg_vol:,} < {min_vol:,}"
-            return result
-
         # Margin check
         fin = stock.financials
         if fin is not None and not fin.empty:
@@ -291,26 +299,42 @@ def deep_screen(ticker, price, iv_min, iv_max, min_vol):
         result["fail_reason"] = f"Error: {str(e)[:100]}"
         return result
 
+def render_progress(ph, title, pct, detail, found=0):
+    pct = max(0, min(100, int(pct)))
+    ph.markdown(
+        f"<div class='loader'><div class='loader-icon'></div>"
+        f"<div class='loader-title'>{html.escape(title)}</div>"
+        f"<div class='loader-track'><div class='loader-fill' style='width:{pct}%'></div>"
+        f"<span class='loader-pct'>{pct}%</span></div>"
+        f"<div class='loader-detail'>{html.escape(detail)}</div>"
+        f"<div class='loader-found'><b>{found}</b> qualified so far</div></div>",
+        unsafe_allow_html=True,
+    )
+
 # ── TIER SCAN (V2 exact pipeline: industry filter → batch price → deep) ──
 def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
               iv_min, iv_max, min_vol):
     qualified = []
     failed = []
-    status_placeholder = st.empty()
-    progress_placeholder = st.progress(0.0, text=f"Loading {tier_name}...")
+    progress_placeholder = st.empty()
+    render_progress(progress_placeholder, f"Screening {tier_name}", 0, "Loading tickers")
 
     if not tickers:
+        progress_placeholder.empty()
         return [], []
 
     # 1. Industry/name pre-filter (V2 exact)
     passed = tier_name_filter(tickers, sectors, name_map)
     if not passed:
+        progress_placeholder.empty()
         return [], []
 
-    # 2. Batch price filter (yf.download in groups of 300)
+    # 2. Batch price filter (yf.download in groups of 300); occupies 0-20% of the bar
     priced = []
     for i in range(0, len(passed), 300):
         batch = passed[i:i + 300]
+        render_progress(progress_placeholder, f"Screening {tier_name}",
+                        20 * i / len(passed), f"Filtering {len(passed)} tickers by price")
         try:
             data = yf.download(
                 ",".join(batch),
@@ -334,33 +358,29 @@ def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
             continue
 
     if not priced:
+        progress_placeholder.empty()
         return [], []
 
-    status_placeholder.text(f"Deep screening {len(priced)} candidates in {tier_name}...")
-
-    # 3. Deep screen (sequential with 0.8s delay)
+    # 3. Deep screen in parallel (20-100% of the bar); results re-sorted to input order
     total_priced = len(priced)
-    for i, (t, px) in enumerate(priced):
-        result = deep_screen(t, px, iv_min, iv_max, min_vol)
-        result["tier"] = tier_name  # tag result with tier
-        if result["qualified"]:
-            qualified.append(result)
-        else:
-            failed.append(result)
+    done = 0
+    results = {}
+    with ThreadPoolExecutor(max_workers=DEEP_SCREEN_WORKERS) as pool:
+        futures = {pool.submit(deep_screen, t, px, iv_min, iv_max, min_vol): i
+                   for i, (t, px) in enumerate(priced)}
+        for fut in as_completed(futures):
+            result = fut.result()
+            result["tier"] = tier_name
+            results[futures[fut]] = result
+            done += 1
+            n_q = sum(1 for r in results.values() if r["qualified"])
+            render_progress(progress_placeholder, f"Screening {tier_name}",
+                            20 + 80 * done / total_priced,
+                            f"Deep screening {done} of {total_priced} candidates", n_q)
+    for i in sorted(results):
+        (qualified if results[i]["qualified"] else failed).append(results[i])
 
-        if i < total_priced - 1:
-            time.sleep(DEEP_SCREEN_DELAY)
-
-        if i % max(1, total_priced // 10) == 0:
-            progress_placeholder.progress(
-                (i + 1) / total_priced,
-                text=f"{tier_name}: {i+1}/{total_priced} — {len(qualified)} qualified",
-            )
-
-    progress_placeholder.progress(
-        1.0,
-        text=f"{tier_name}: Done — {len(qualified)} qualified",
-    )
+    progress_placeholder.empty()
     return qualified, failed
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -369,36 +389,72 @@ def scan_tier(tier_name, tickers, sectors, name_map, price_min, price_max,
 
 st.markdown("""
 <style>
-.main-title{font-size:1.8rem;font-weight:700}
-.subtitle{color:#888;margin-bottom:0.5rem}
-.section-label{color:#aaa;font-weight:600;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem}
-.criterion{background:#262626;padding:0.4rem 0.8rem;border-radius:6px;border-left:3px solid #555;font-size:0.85rem;color:#ddd;margin-bottom:0.3rem}
-.criterion strong{color:#fff}
-.tag-allow{display:inline-block;background:#1b5e20;color:#c8e6c9;padding:0 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:600;margin-right:0.3rem}
-.tag-block{display:inline-block;background:#b71c1c;color:#ffcdd2;padding:0 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:600;margin-right:0.3rem}
-.tag-req{display:inline-block;background:#1a237e;color:#c5cae9;padding:0 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:600;margin-right:0.3rem}
-.pass-badge{color:#4caf50;font-weight:600}
-.fail-badge{color:#f44336;font-weight:600}
-.qualified-badge{display:inline-block;background:#1b5e20;color:#fff;padding:0.15rem 0.6rem;border-radius:12px;font-size:0.8rem;font-weight:600}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html,body,[class*="css"],.stApp{font-family:'Inter',sans-serif}
+.stApp{background:#f6f5f3;color:#1f2328}
+.block-container{max-width:860px;padding-top:2rem}
+header[data-testid="stHeader"]{background:transparent}
+.main-title{font-size:1.9rem;font-weight:700;letter-spacing:-0.02em;color:#1f2328}
+.subtitle{color:#6b7280;margin:0.2rem 0 1.5rem;font-size:0.95rem}
+.section-label{color:#6b7280;font-weight:600;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em;margin:1.4rem 0 0.6rem}
+.chip-row{display:flex;flex-wrap:wrap;gap:0.5rem}
+.chip{background:#fff;border:1px solid #e6e3de;border-radius:999px;padding:0.35rem 0.85rem;font-size:0.82rem;color:#4b5563}
+.chip b{color:#1f2328;font-weight:600}
+.chip.ok{border-color:#bfe3cf;background:#e9f6ee}
+.chip.no{border-color:#f1c9c9;background:#fbeeee}
+.card{background:#fff;border:1px solid #e6e3de;border-radius:12px;padding:1.1rem 1.25rem;margin-bottom:0.9rem;box-shadow:0 1px 2px rgba(0,0,0,.04);transition:box-shadow .15s}
+.card:hover{box-shadow:0 4px 14px rgba(0,0,0,.08)}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}
+.card-name{font-size:1.05rem;font-weight:600;color:#1f2328}
+.card-sub{font-size:0.8rem;color:#6b7280;margin-top:0.15rem}
+.card-price{font-size:1.35rem;font-weight:700;color:#1f2328;text-align:right}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0.6rem;margin-top:0.9rem}
+.metric{background:#f6f5f3;border-radius:8px;padding:0.55rem 0.7rem}
+.metric span{display:block;font-size:0.68rem;color:#6b7280;text-transform:uppercase;letter-spacing:0.06em}
+.metric b{font-size:0.98rem;color:#1f2328;font-weight:600}
+.pos{color:#1f9d63!important}.neg{color:#d64545!important}
+.tier-tag{display:inline-block;padding:0.1rem 0.55rem;border-radius:999px;font-size:0.68rem;font-weight:600;color:#fff;margin-left:0.5rem;vertical-align:middle}
+.driver{margin-top:0.8rem;font-size:0.82rem;color:#6b7280;line-height:1.5}
+.stButton>button{border-radius:8px;border:1px solid #e6e3de;background:#fff;color:#1f2328;font-weight:500}
+.stButton>button:hover{border-color:#ff6b3d;color:#ff6b3d}
+.stButton>button[kind="primary"]{background:#ff6b3d;border-color:#ff6b3d;color:#fff;font-weight:600}
+.stButton>button[kind="primary"]:hover{background:#e85a2d;color:#fff}
 div[data-testid="stStatusWidget"]{display:none!important}
-.tier-tag{display:inline-block;padding:0.1rem 0.5rem;border-radius:4px;font-size:0.7rem;font-weight:600;color:#fff;margin-left:0.3rem}
+@media(max-width:640px){.metrics{grid-template-columns:repeat(2,1fr)}}
+section[data-testid="stSidebar"]{background:#fff;border-right:1px solid #e6e3de}
+section[data-testid="stSidebar"] .section-label{margin-top:0.4rem}
+.side-brand{font-weight:700;font-size:1.1rem;color:#1f2328;margin-bottom:0.5rem}
+.side-brand i{display:inline-block;width:10px;height:10px;border-radius:3px;background:#ff6b3d;margin-right:8px}
+.loader{background:#fff;border:1px solid #e6e3de;border-radius:16px;padding:2rem 1.5rem;margin:0.8rem 0;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.loader-icon{width:36px;height:36px;margin:0 auto 0.9rem;border-radius:50%;border:3px solid #ffe3d9;border-top-color:#ff6b3d;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loader-title{font-size:1.05rem;font-weight:600;color:#1f2328;margin-bottom:1rem}
+.loader-track{position:relative;height:18px;max-width:520px;margin:0 auto;background:#ffe9e1;border-radius:999px;overflow:hidden}
+.loader-fill{height:100%;background:#ff6b3d;border-radius:999px;transition:width .3s ease}
+.loader-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.68rem;font-weight:600;color:#1f2328}
+.loader-detail{margin-top:0.9rem;font-size:0.82rem;color:#6b7280}
+.loader-found{margin-top:0.2rem;font-size:0.8rem;color:#6b7280}
+.loader-found b{color:#1f9d63}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">📊 FRANCINE SCREENER V3</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">V2 screening logic | 4-tier scanning | NO industry exclusions</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Francine Screener</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Options-liquid stocks across four market tiers, no industry exclusions.</div>', unsafe_allow_html=True)
 
 # Criteria display
-st.markdown('<div class="section-label">Screening Criteria</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-label">Screening criteria</div>', unsafe_allow_html=True)
 st.markdown("""
-<div class="criterion" style="border-left-color:#42a5f5"><span class="tag-allow">ALLOW</span> <strong>All industries — no exclusions</strong></div>
-<div class="criterion" style="border-left-color:#66bb6a"><span class="tag-block">BLOCK</span> <strong>China, Russia, Latin America</strong></div>
-<div class="criterion" style="border-left-color:#f9a825"><span class="tag-req">LIQUID</span> <strong>Weekly options</strong> with trading volume</div>
-<div class="criterion" style="border-left-color:#ab47bc"><span class="tag-req">IV RANGE</span> <strong>28–48%</strong> &middot; <strong>Volume</strong> &ge;2M &middot; <strong>Margin</strong> &gt;0%</div>
+<div class="chip-row">
+<span class="chip ok"><b>All industries</b></span>
+<span class="chip no"><b>Blocked:</b> China, Russia, Latin America</span>
+<span class="chip"><b>Weekly options</b> with volume</span>
+<span class="chip"><b>IV</b> target ±10</span>
+<span class="chip"><b>Volume</b> ≥ 2M</span>
+<span class="chip"><b>Margin</b> &gt; 0%</span>
+</div>
 """, unsafe_allow_html=True)
 
 # Tier selection
-st.markdown('<div class="section-label">Tier Selection</div>', unsafe_allow_html=True)
 tier_keys = list(TIERS.keys())
 if "_tier_init" not in st.session_state:
     for k in tier_keys:
@@ -422,50 +478,41 @@ if preset:
     del st.session_state._preset
     st.rerun()
 
-cols = st.columns(4)
-with cols[0]:
-    if st.button("📋 Tier 1", use_container_width=True):
+with st.sidebar:
+    st.markdown('<div class="side-brand"><i></i>Francine</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Tier selection</div>', unsafe_allow_html=True)
+    pc = st.columns(2)
+    if pc[0].button("Tier 1", use_container_width=True):
         st.session_state._preset = "t1"; st.rerun()
-with cols[1]:
-    if st.button("📋 Tiers 1-3", use_container_width=True):
+    if pc[1].button("Tiers 1-3", use_container_width=True):
         st.session_state._preset = "t13"; st.rerun()
-with cols[2]:
-    if st.button("🌐 All 4", use_container_width=True):
+    if pc[0].button("All 4", use_container_width=True):
         st.session_state._preset = "all"; st.rerun()
-with cols[3]:
-    if st.button("🗑️ Clear", use_container_width=True):
+    if pc[1].button("Clear", use_container_width=True):
         st.session_state._preset = "none"; st.rerun()
 
-for k in tier_keys:
-    ck = f"tc_{k}"
-    if ck not in st.session_state:
-        st.session_state[ck] = (k == "S&P 500")
-    st.checkbox(f"{TIERS[k]['label']} — {TIERS[k]['desc']}",
-                value=st.session_state[ck], key=f"cb_{k}")
-    st.session_state[ck] = st.session_state[f"cb_{k}"]
+    for k in tier_keys:
+        ck = f"tc_{k}"
+        if ck not in st.session_state:
+            st.session_state[ck] = (k == "S&P 500")
+        st.checkbox(f"{TIERS[k]['label']} — {TIERS[k]['desc']}",
+                    value=st.session_state[ck], key=f"cb_{k}")
+        st.session_state[ck] = st.session_state[f"cb_{k}"]
+
+    st.markdown('<div class="section-label">Parameters</div>', unsafe_allow_html=True)
+    pr = st.columns(2)
+    price_min = pr[0].number_input("From $", min_value=0.0, value=10.0, step=5.0)
+    price_max = pr[1].number_input("To $", min_value=0.0, value=50.0, step=5.0)
+    iv_target = st.number_input("IV target %", min_value=0.0, value=35.0, step=5.0)
+    min_vol = st.number_input("Min volume", min_value=0, value=2000000, step=500000)
+
+    iv_min = max(0, iv_target - 10)
+    iv_max = iv_target + 10
+    st.caption(f"IV range: {iv_min:.0f}–{iv_max:.0f}%")
+
+    run = st.button("Run screen", type="primary", use_container_width=True)
 
 selected = [k for k in tier_keys if st.session_state.get(f"tc_{k}", False)]
-
-# Price + IV + Volume inputs
-st.markdown("---")
-st.markdown('<div class="section-label">Parameters</div>', unsafe_allow_html=True)
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    price_min = st.number_input("From $", min_value=0.0, value=10.0, step=5.0)
-with c2:
-    price_max = st.number_input("To $", min_value=0.0, value=50.0, step=5.0)
-with c3:
-    iv_target = st.number_input("IV target %", min_value=0.0, value=35.0, step=5.0)
-with c4:
-    min_vol = st.number_input("Min Vol", min_value=0, value=2000000, step=500000)
-
-iv_min = max(0, iv_target - 10)
-iv_max = iv_target + 10
-
-st.markdown(f"<small>IV range: {iv_min:.0f}–{iv_max:.0f}% | Default: 28–48%</small>",
-            unsafe_allow_html=True)
-
-run = st.button("🚀 RUN SCREEN", type="primary", use_container_width=True)
 
 # ── SCREENING ──────────────────────────────────────────────────────────
 if run:
@@ -510,35 +557,30 @@ if run:
 
         # ── RESULTS ────────────────────────────────────────────────────
         st.markdown("---")
-        st.markdown(f"## ✅ Results: {len(all_qualified)} qualified")
+        st.markdown("## Results: " + str(len(all_qualified)) + " qualified")
 
         if all_qualified:
             for idx, q in enumerate(all_qualified, 1):
                 tn = q.get("tier", "")
                 tc = TIERS.get(tn, {}).get("color", "#555")
-                with st.container(border=True):
-                    st.markdown(
-                        f"### {idx}. {q['company_name']} ({q['ticker']})"
-                        f"<span class='tier-tag' style='background:{tc}'>{tn}</span>",
-                        unsafe_allow_html=True,
-                    )
-                    cc1, cc2 = st.columns([1, 2])
-                    with cc1:
-                        st.markdown(
-                            f"**Sector:** {q.get('sector','N/A')} / {q.get('industry','N/A')}")
-                        st.markdown(
-                            f"**Options:** {'✅ Liquid' if q.get('options_liquid') else '❌'}")
-                    with cc2:
-                        st.markdown(f"**Price:** ${q['price']:.2f}")
-                        st.markdown(f"**IV:** {q['iv']:.1f}%")
-                        st.markdown(f"**Volume:** {(q.get('avg_volume') or 0):,}")
-                        st.markdown(f"**Margin:** {(q.get('margin') or 0):.1f}%")
-                        if q.get("cagr"):
-                            st.markdown(f"**CAGR:** {q['cagr']:+.1f}%")
-                    st.markdown(
-                        "<span class='qualified-badge'>V3 QUALIFIED</span>",
-                        unsafe_allow_html=True,
-                    )
+                cagr = q.get("cagr")
+                cagr_html = (f"<b class='{'pos' if cagr >= 0 else 'neg'}'>{cagr:+.1f}%</b>"
+                             if cagr is not None else "<b>—</b>")
+                name = html.escape(q.get("company_name", ""))
+                st.markdown(
+                    f"<div class='card'><div class='card-head'><div>"
+                    f"<div class='card-name'>{name} · {html.escape(q['ticker'])}"
+                    f"<span class='tier-tag' style='background:{tc}'>{html.escape(tn)}</span></div>"
+                    f"<div class='card-sub'>{html.escape(q.get('sector','N/A'))} / {html.escape(q.get('industry','N/A'))}</div></div>"
+                    f"<div class='card-price'>${q['price']:.2f}</div></div>"
+                    f"<div class='metrics'>"
+                    f"<div class='metric'><span>IV</span><b>{q['iv']:.1f}%</b></div>"
+                    f"<div class='metric'><span>Avg volume</span><b>{(q.get('avg_volume') or 0):,}</b></div>"
+                    f"<div class='metric'><span>Margin</span><b>{(q.get('margin') or 0):.1f}%</b></div>"
+                    f"<div class='metric'><span>Rev CAGR</span>{cagr_html}</div></div>"
+                    f"<div class='driver'>{html.escape(q.get('driver',''))}</div></div>",
+                    unsafe_allow_html=True,
+                )
 
             # ── CSV download ──
             csv_lines = []
